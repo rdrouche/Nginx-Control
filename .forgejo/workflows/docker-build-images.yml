@@ -49,7 +49,7 @@ jobs:
       - name: Build and Push - Nginx Control
         run: |
           # Local Registry 
-          REGISTRY="https://forge.rdr-it.com/Nginx/nginx-control"
+          REGISTRY="forge.rdr-it.com/Nginx/nginx-control"
 
           # Définition des noms d'images
           IMAGE_LOCAL="${REGISTRY}/nginx-control"
@@ -76,13 +76,13 @@ jobs:
           BRANDING_DOC="https://docs.nginx-control.rdr-it.com/"
 
           # VERSION CONTROL
-          DASHBOARD_VERSION_URL=""        
-          NGINX_VERSION_URL=""
+          DASHBOARD_VERSION_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/version-nginx-control"        
+          NGINX_VERSION_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/version-nginx"
 
           # COMPONENT CONTROL
           SYNC_REF_URL="https://forge.rdr-it.com/Nginx/reference-files"
-          ALERTING_URL=""
-          CHANGELOG_URL=""
+          ALERTING_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/alert-message"
+          CHANGELOG_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/changelog"
           ANALYZER_DEFAULT_IMAGE=""
 
           # Construction de l'image
@@ -124,7 +124,7 @@ jobs:
       - name: Build and Push - Nginx Analyzer Agent
         run: |
           # Local Registry 
-          REGISTRY="https://forge.rdr-it.com/Nginx/nginx-control"
+          REGISTRY="forge.rdr-it.com/Nginx/nginx-control"
 
           # Définition des noms d'images
           IMAGE_LOCAL="${REGISTRY}/nginx-analyzer-agent"
@@ -171,7 +171,7 @@ jobs:
       - name: Build and Push - Nginx Agent
         run: |
           # Local Registry 
-          REGISTRY="https://forge.rdr-it.com/Nginx/nginx-control"
+          REGISTRY="forge.rdr-it.com/Nginx/nginx-control"
 
           # Définition des noms d'images
           IMAGE_LOCAL="${REGISTRY}/nginx-agent"
