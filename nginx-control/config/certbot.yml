@@ -1,0 +1,69 @@
+# Certbot HTTP challenge — configuration
+# Dashboard manages the certbot container lifecycle
+
+enable: false
+
+# Email for Let's Encrypt notifications
+email: admin@example.com
+
+# Use Let's Encrypt staging server (no rate limits — for testing)
+# Ignored when `server` below is set — see its own comment.
+staging: false
+
+# Custom ACME server URL (directory endpoint) — for an internal/private CA
+# such as step-ca, or any other ACME-compatible endpoint. Commented out (the
+# default) to use certbot's own built-in Let's Encrypt production URL — a
+# bare `server:` with nothing after the colon parses as an empty YAML
+# section here, not an empty string, so leaving it uncommented but blank is
+# not a safe way to mean "not set"; comment the line out instead.
+# Takes priority over `staging` above when set: staging is really just
+# certbot's shortcut for pointing at Let's Encrypt's own staging directory,
+# which no longer applies once a different CA is configured here.
+# server: https://step-ca.example.internal/acme/acme/directory
+
+# Path on the HOST to a PEM file with the internal ACME server's own root
+# certificate, if it serves its ACME endpoint over HTTPS with one (a
+# self-signed CA like step-ca's default setup does) — certbot's own image
+# has no reason to trust it otherwise, and every ACME request (issuing,
+# every renewal) would fail before ever reaching domain validation.
+# Mounted read-only into both the one-off issue container and the
+# persistent renewal container; commented out (the default) mounts nothing.
+# Example: ca_bundle_host_path: /containers/nginx-rproxy/step-ca-root.pem
+# ca_bundle_host_path:
+
+# Certbot Docker image
+container_image: certbot/certbot:latest
+
+# Absolute path on the HOST for the webroot challenge directory
+# Must be bind-mounted into nginx at /var/www/letsencrypt (read)
+# and into certbot at /var/www/certbot (write)
+# Example: /containers/nginx-rproxy/webroot
+webroot_host_path: /containers/nginx-rproxy/webroot
+
+# Absolute path on the HOST for the certificates directory — this MUST be
+# the exact same directory your docker-compose.yml already mounts as
+# ./certs into both the nginx container (/etc/letsencrypt) and the
+# nginx-dashboard container (/nginx/certs), otherwise certificates issued
+# from this dashboard will be written somewhere neither container can see
+# them even though certbot itself reports success.
+# Left unset (the default), it is derived as the sibling "certs" directory
+# next to webroot_host_path above (e.g. /containers/nginx-rproxy/certs),
+# which matches every layout shipped in this project's docker-compose.yml.
+# Set this explicitly only if your certs directory does NOT sit next to
+# your webroot directory.
+# Example: certs_host_path: /containers/nginx-rproxy/certs
+# certs_host_path:
+
+# Path INSIDE THE NGINX CONTAINER where webroot_host_path above is mounted
+# for nginx to serve challenge files back to the ACME server. The dashboard
+# only manages certbot's own containers via the Docker API — it has no way
+# to see nginx's own docker-compose volumes, so this is only ever a
+# best-effort default (/var/www, matching this project's own shipped
+# docker-compose.yml). Used to generate the post-issuance vhost snippet.
+# If your nginx mounts webroot_host_path somewhere else, the ACME server's
+# HTTP-01 validation request will 404 against a snippet built from the
+# wrong root, and issuance/renewal fails with a generic
+# "authorizations not finalized" error rather than an obvious 404 — set it
+# here to match your real setup.
+# Example: webroot_nginx_path: /var/www/letsencrypt
+# webroot_nginx_path:

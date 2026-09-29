@@ -1,0 +1,59 @@
+# Blocklists IP — sources externes agregees automatiquement, dedupliquees, et
+# publiees dans un snippet nginx inclus au niveau http.
+#
+# Chaque source est recuperee periodiquement (voir interval_cron), fusionnee
+# avec les autres et dedupliquee. Une source qui echoue temporairement (reseau,
+# 404, timeout) ne fait PAS disparaitre ses IP deja connues : la derniere liste
+# recue avec succes est mise en cache et reutilisee jusqu au prochain succes.
+#
+# Ne desactivez pas la logique de validation cote code : seules les lignes qui
+# ressemblent STRICTEMENT a une adresse IPv4/IPv6 (ou un bloc CIDR) sont
+# retenues — toute autre ligne (commentaire, texte, ligne corrompue) est
+# ignoree silencieusement plutot que recopiee telle quelle dans la
+# configuration nginx generee.
+
+enable: true
+
+# Planification au format cron standard (5 champs, meme moteur que
+# config/scheduler.yml) : minute heure jour-du-mois mois jour-de-semaine.
+# Exemples : "0 */6 * * *" (toutes les 6h), "0 3 * * *" (tous les jours a 3h),
+# "0 */1 * * *" (toutes les heures).
+interval_cron: "0 */6 * * *"
+
+# Action appliquee aux IP bloquees par le snippet d'application genere
+# (blocklist-enforce.conf) :
+#   deny_403 -> renvoie une erreur 403 explicite
+#   drop_444 -> ferme la connexion sans reponse (comportement nginx non
+#               standard, utile pour ne donner aucune information a un scanner)
+block_action: deny_403
+
+# Journalisation dediee des hits (mesure d efficacite, recherche d IP par
+# liste, statistiques du Digest) — desactivee par defaut car elle ecrit un
+# fichier de log supplementaire. Deux methodes au choix, jamais imposees :
+#   dedicated -> log global dedie (blocklist-hits.log), une ligne par requete
+#                bloquee, tous vhosts confondus. Precis a 100% (chaque hit
+#                logge est bien un blocage blocklist), et ne touche ni ne
+#                requiert de desactiver logging.conf ou le format de log
+#                partage : c est un `access_log ... if=$blocklist_ip;`
+#                independant, ajoute dans blocklist-enforce.conf.
+#   approx    -> aucun log dedie. L "efficacite" se limite alors a comparer
+#                le nombre d IP bloquees (totalUniqueIps) avec le trafic
+#                global — impossible de distinguer un blocage blocklist d un
+#                autre blocage sur la meme IP. A reserver aux deploiements
+#                qui veulent eviter tout fichier de log supplementaire.
+# L agent d analyse (nginx-analyzer) et le controle nginx s adaptent
+# automatiquement a la methode choisie ici, sans configuration cote agent.
+hit_logging_enable: false
+hit_logging_method: dedicated
+
+sources:
+  - name: datashield
+    url: "https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/refs/heads/main/prod_data-shield_ipv4_blocklist.txt"
+    enable: true
+
+  # Exemple de deuxieme source (desactivee par defaut) — dupliquez ce bloc
+  # pour ajouter autant de sources que necessaire, chacune avec un "name"
+  # unique (identifiant interne, utilise dans les journaux et le cache).
+  # - name: exemple-autre-liste
+  #   url: "https://exemple.com/liste-ip.txt"
+  #   enable: true

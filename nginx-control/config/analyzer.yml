@@ -1,0 +1,79 @@
+# Analyse des journaux nginx — agent separe
+#
+# L agent tourne dans son propre conteneur : l analyse d un journal charge est
+# un travail CPU continu, et le sortir du dashboard evite qu un pic de trafic
+# rende l interface lente.
+
+enable: false
+
+container_image: forge.rdr-it.com/dockerfiles/nginx-analyzer:latest
+container_name: ngx-analyzer
+port: 9100
+
+# ── Chemins HOTE (indispensables) ────────────────────────────────────────────
+# Docker resout les sources de montage sur l HOTE. Un chemin qui n existe que
+# dans le conteneur du dashboard ferait monter un dossier vide, et l agent ne
+# verrait aucun journal.
+host_logs_path: /containers/nginx-rproxy/logs
+host_data_path: /containers/nginx-rproxy/analyzer
+host_geoip_path: /containers/nginx-rproxy/geoip_data
+
+# Fix v12.22.x (audit finding ANA-02) : l ancien motif par defaut
+# (\.access\.log$) n a jamais correspondu au fichier ecrit par la
+# configuration livree avec ce projet — logging.conf ecrit dans
+# "vhosts_access.log" (avec un "_", pas un "."), donc une installation par
+# defaut ne suivait AUCUN fichier : la page Analyse restait vide, ce qui
+# ressemble a "aucun trafic" plutot qu a une panne de configuration. Le
+# nouveau motif couvre les deux conventions : un fichier par vhost
+# ("site.fr.access.log", precede d un point) ET le fichier partage de ce
+# projet ("vhosts_access.log", precede d un underscore ou en debut de nom).
+log_pattern: (^|[._])access\.log$
+
+# ── Detection par signature (active des la premiere minute) ──────────────────
+# Seuils volontairement hauts : un detecteur qui crie au loup est ignore en
+# trois jours, et devient alors pire qu inutile.
+bruteforce_min_failures: 15
+scan_min_requests: 40
+flood_min_requests: 600
+
+# ── Detection volumetrique (necessite un apprentissage) ──────────────────────
+# Comptez trois semaines avant la premiere alerte fiable : la reference est
+# calculee par creneau horaire de la semaine, il faut plusieurs passages sur
+# chaque creneau. L agent annonce son etat plutot que d alerter a vide.
+learning_days: 21
+sigma_threshold: 6
+
+# ── Notifications ────────────────────────────────────────────────────────────
+# Severite minimale envoyee par courriel : low | medium | high
+# La regle `analyzer_alert` doit exister et avoir des destinataires dans
+# notifications.yml pour que le courriel parte.
+notify_min_severity: medium
+
+alert_retention_days: 90
+
+# ── Regles — activation par defaut (premier demarrage uniquement) ────────────
+# Passe le tout premier demarrage, l agent memorise ses propres reglages
+# (bascules faites depuis la modale "Regles" de la page Analyse) et ces
+# valeurs sont ignorees. Modifiez-les depuis le dashboard, pas ici, une fois
+# l agent deja demarre une premiere fois.
+rule_bruteforce_enable: true
+rule_scan_enable: true
+rule_flood_enable: true
+rule_scraping_enable: true
+rule_volumetric_enable: true
+rule_country_traffic_enable: true
+
+# ── ModSecurity / WAF ─────────────────────────────────────────────────────────
+# Journaux d audit ModSecurity, un fichier par vhost. Format attendu :
+# SecAuditLogFormat JSON — le format natif (multi-parties) n est pas supporte,
+# il n a pas de schema stable d une version a l autre.
+#
+#   SecAuditEngine RelevantOnly
+#   SecAuditLogParts ABIJDEFHZ
+#   SecAuditLogType Serial
+#   SecAuditLogFormat JSON
+#   SecAuditLog /var/log/nginx/<vhost>.waf.log
+#
+# Vue separee dans le dashboard, sans notification pour l instant.
+waf_log_pattern: \.waf\.log$
+waf_retention_days: 60

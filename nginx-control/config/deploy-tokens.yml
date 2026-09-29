@@ -1,0 +1,39 @@
+# Jetons de deploiement — permettent a un pipeline CI/CD (Forgejo Actions,
+# GitHub Actions, GitLab CI, ...) de declencher Pull / Test / Deploiement /
+# Sauvegarde Git via l API, SANS utiliser le jeton API_TOKEN global.
+#
+# Pourquoi un jeton separe plutot que API_TOKEN : API_TOKEN s authentifie en
+# admin complet (tous les endpoints, toutes les permissions). Le mettre dans
+# un secret CI signifie qu une fuite (executeur compromis, log de pipeline
+# mal configure) compromet tout le dashboard, pas seulement le declenchement
+# d un deploiement. Un jeton de deploiement, lui, ne donne jamais acces a
+# autre chose que Pull/Test/Deploiement/Sauvegarde Git, quoi qu il arrive
+# ailleurs dans l application — voir server.js (DEPLOY_TOKEN_ROUTES) et
+# lib/deploy-tokens.js pour le detail du mecanisme.
+#
+# Ce fichier n a aucun effet tant qu il ne contient aucun jeton valide (au
+# moins 16 caracteres). Vide ou absent = fonctionnalite desactivee, aucun
+# changement de comportement pour un deploiement existant.
+#
+# Chaque jeton peut restreindre ses propres actions autorisees via
+# "actions" (sous-ensemble de pull, test, deploy, backup). Omis = les
+# quatre sont autorisees. Cela permet par exemple de donner a un pipeline de
+# verification (sur chaque push) un jeton limite a "test", et de reserver un
+# jeton "deploy" a un pipeline declenche uniquement depuis la branche
+# protegee.
+#
+# Valeur "token" masquee automatiquement dans l editeur de configuration du
+# dashboard une fois enregistree (meme mecanisme que pour git.yml).
+#
+# Exemple :
+# tokens:
+#   - name: forgejo-ci
+#     token: "un-secret-aleatoire-d-au-moins-16-caracteres"
+#     enable: true
+#     actions: [pull, test, deploy, backup]
+#   - name: github-ci-test-only
+#     token: "un-autre-secret-different"
+#     enable: true
+#     actions: [test]
+
+tokens:

@@ -1,0 +1,57 @@
+# Généré par tools.rdr-it.com
+
+# ─── Node.js ───
+node_modules/
+npm-debug.log*
+yarn-error.log
+.pnpm-store/
+dist/
+build/
+.env
+.env.local
+
+# ─── Go ───
+*.exe
+*.test
+*.out
+/vendor/
+dist/
+
+# ─── Docker ───
+docker-compose.override.yml
+.env
+*.env
+
+# ─── IDE/Éditeurs ───
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+._*
+
+# ─── Secrets ───
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+.env.production
+credentials.json
+
+*.token
+nginx-control-agent-state.json
+
+nginx-control/routes-before.txt
+nginx-control/server.js.orig
+nginx-agent/data/
+nginx-agent/README.md
+nginx-analyzer-agent/README.md

@@ -1,0 +1,5 @@
+nginx-control-agent
+nginx-control-agent-state.json
+*.token
+.env
+data/

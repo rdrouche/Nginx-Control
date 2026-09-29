@@ -1,0 +1,53 @@
+# Auto-config Docker (labels facon Traefik) — voir README.md pour le schema
+# complet des labels nginx-control.* et le document de conception du projet.
+#
+# enable: active/desactive entierement la detection et la generation de
+# vhosts a partir des labels Docker. Les vhosts deja generes ne sont ni
+# supprimes ni modifies quand enable passe a false — ils restent tels quels
+# jusqu au prochain cycle apres reactivation.
+# Desactive par defaut (v12.41.0) : fonctionnalite opt-in — passer a true
+# pour l activer explicitement.
+enable: false
+
+# require_approval: quand true (par defaut — choix delibere, voir la section
+# securite du README), un server_name qui ne correspond a aucun motif de
+# allowed_server_name_patterns ci-dessous reste "en attente d approbation"
+# dans le Dashboard (page Auto-config Docker / API) tant qu un operateur ne
+# l a pas valide explicitement. Aucun vhost n est jamais applique en silence
+# a partir d un simple label pose sur un conteneur.
+require_approval: true
+
+# Intervalle de detection par sondage (secondes) — le filet de securite,
+# toujours actif meme si un evenement Docker est manque (redemarrage du
+# dashboard en plein milieu d un demarrage de conteneur, par exemple). Pris
+# en compte au demarrage du conteneur dashboard uniquement — un changement
+# necessite un redemarrage.
+poll_interval_sec: 15
+
+# events_enable : en plus du sondage ci-dessus, ecoute les evenements Docker
+# (start/stop/die/update/destroy) en temps reel pour reagir immediatement a
+# un conteneur qui demarre ou s arrete, plutot que d attendre le prochain
+# sondage. Actif par defaut ; passer a false pour ne garder que le sondage.
+events_enable: true
+
+# events_debounce_ms : delai (millisecondes) de regroupement apres un
+# evenement Docker avant de lancer un cycle. Plusieurs conteneurs qui
+# demarrent en rafale (ex. `docker compose up` d une stack de 10 services)
+# ne declenchent ainsi qu un seul cycle de test+reload, pas dix.
+events_debounce_ms: 3000
+
+# certbot_retry_minutes : pour les vhosts avec ssl_certificate=certbot_http
+# ou certbot_dns (voir README), delai minimum avant de RE-tenter une emission
+# de certificat apres un echec (DNS mal propage, identifiants invalides,
+# limite de debit Let's Encrypt...). Jamais retente a chaque cycle — cela
+# saturerait rapidement les limites de l ACME server. Un premier essai
+# (aucun echec precedent enregistre) n est jamais retarde par ce reglage.
+certbot_retry_minutes: 15
+
+# Motifs (glob, "*" = n importe quelle sequence de caracteres) de server_name
+# pre-autorises : un conteneur dont le server_name correspond a l un de ces
+# motifs est applique automatiquement, meme avec require_approval: true.
+# Laisser vide pour tout faire passer par l approbation manuelle.
+allowed_server_name_patterns:
+#  - "*.apps.example.com"
+#  - "internal.example.lan"

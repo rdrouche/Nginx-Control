@@ -1,0 +1,30 @@
+# Notification rules — Nginx Dashboard
+# Each section can have enable: true/false and a recipients list
+
+cert_expiry:
+  enable: false
+  days_before: 30
+  urgent_days: 5
+  recipients:
+    - admin@example.com
+
+nginx_test_error:
+  enable: false
+  recipients:
+    - admin@example.com
+
+nginx_reload:
+  enable: false
+  recipients:
+    - admin@example.com
+
+backup_failure:
+  enable: false
+  recipients:
+    - admin@example.com
+
+# Alertes de l analyseur de journaux (brute force, scan, flood, volumetrie)
+analyzer_alert:
+  enable: false
+  recipients:
+    - admin@example.com

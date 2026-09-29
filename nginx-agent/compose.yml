@@ -1,0 +1,87 @@
+# Template de deploiement pour nginx-control-agent — a copier sur l HOTE
+# DISTANT (celui qui heberge les containers que le dashboard doit exposer),
+# PAS sur l hote qui fait tourner nginx/nginx-dashboard lui-meme. Voir
+# README.md pour la marche a suivre complete (enrolement, approbation,
+# jeton).
+#
+# Usage :
+#   1. cp sample.env .env   puis editer .env (au minimum DASHBOARD_URL)
+#   2. docker compose up -d --build
+#   3. Suivre les logs (docker compose logs -f) : l agent s enrole seul et
+#      attend l approbation depuis la page "Hotes distants" du dashboard.
+#   4. Une fois approuve, recuperer le jeton affiche par le dashboard et le
+#      deposer dans ./data/token (voir volume ci-dessous) — pas besoin de
+#      redemarrer le conteneur, --token-file est relu a chaque cycle.
+
+services:
+  nginx-control-agent:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    # ou image deja publiee, si vous ne voulez pas reconstruire sur chaque
+    # hote distant :
+    # image: forge.rdr-it.com/dockerfiles/nginx-control-agent:${APP_VERSION:-latest}
+    container_name: nginx-control-agent
+    restart: ${AGENT_RESTART_POLICY:-always}
+    environment:
+      # Obligatoire (voir .env) — l agent refuse de demarrer sans cette
+      # variable (erreur explicite dans les logs, voir README.md).
+      - DASHBOARD_URL=${DASHBOARD_URL:-}
+      - AGENT_HOSTNAME=${AGENT_HOSTNAME:-}
+      - AGENT_FINGERPRINT=${AGENT_FINGERPRINT:-}
+      - TOKEN_FILE=/data/token
+      # Alternative a TOKEN_FILE ci-dessus : deposer directement le jeton
+      # dans une variable d environnement (utile depuis un pipeline CI/CD ou
+      # un coffre-fort a secrets qui injecte deja ses valeurs comme env) —
+      # TOKEN est prioritaire sur TOKEN_FILE s il est non vide. Contrepartie :
+      # visible via `docker inspect`/`docker compose config`, et un
+      # redemarrage du conteneur est necessaire pour le faire tourner (voir
+      # README.md, "Alternative : jeton en variable d environnement").
+      # - TOKEN=${TOKEN:-}
+      - STATE_FILE=/data/nginx-control-agent-state.json
+      - DOCKER_SOCKET=/var/run/docker.sock
+      - POLL_INTERVAL=${POLL_INTERVAL:-30s}
+      - INSECURE_SKIP_VERIFY=${INSECURE_SKIP_VERIFY:-false}
+      - TUNNEL_ENABLE=${TUNNEL_ENABLE:-true}
+      # ── Mode "relay" (port unique/double vers ce meme agent, v12.20.0) ──
+      # Laisser vide = relais desactive (mode direct/tunnel uniquement).
+      # RELAY_HTTP_ADVERTISE / RELAY_HTTPS_ADVERTISE : l adresse que NGINX
+      # (cote dashboard) doit utiliser pour joindre CE conteneur — donc
+      # l IP/nom DNS reellement routable depuis nginx (le VLAN distant),
+      # PAS une adresse interne au conteneur. Voir README.md.
+      - RELAY_HTTP_LISTEN=${RELAY_HTTP_LISTEN:-}
+      - RELAY_HTTP_ADVERTISE=${RELAY_HTTP_ADVERTISE:-}
+      - RELAY_HTTPS_LISTEN=${RELAY_HTTPS_LISTEN:-}
+      - RELAY_HTTPS_ADVERTISE=${RELAY_HTTPS_ADVERTISE:-}
+      - RELAY_HTTPS_CERT=${RELAY_HTTPS_CERT:-}
+      - RELAY_HTTPS_KEY=${RELAY_HTTPS_KEY:-}
+      # Verification TLS du BACKEND local (agent -> Docker), independante du
+      # listener nginx -> agent ci-dessus. Voir sample.env / README.md.
+      - RELAY_BACKEND_INSECURE_SKIP_VERIFY=${RELAY_BACKEND_INSECURE_SKIP_VERIFY:-false}
+      # Multi-master (v12.21.0) : quand renseigne, remplace ENTIEREMENT
+      # DASHBOARD_URL/STATE_FILE/TOKEN(_FILE) ci-dessus par une liste de
+      # cibles independantes (voir README.md, "Multi-master"). Le fichier
+      # lui-meme doit vivre dans /data (le volume monte plus bas), ex.
+      # /data/targets.json — a deposer sur l hote avant le premier demarrage.
+      - TARGETS_FILE=${TARGETS_FILE:-}
+    ports:
+      # Uniquement necessaire si le mode relay est active ci-dessus — un
+      # seul port par schema, quel que soit le nombre de vhosts/containers
+      # locaux exposes (voir README.md, "Mode relay"). A adapter/retirer
+      # selon RELAY_HTTP_LISTEN / RELAY_HTTPS_LISTEN.
+      - "${RELAY_HTTP_HOST_PORT:-8080}:8080"
+      - "${RELAY_HTTPS_HOST_PORT:-8443}:8443"
+    volumes:
+      # Socket Docker LOCAL a cet hote distant (jamais celui de l hote
+      # nginx/dashboard) — lecture seule : l agent ne fait que lister les
+      # conteneurs et lire leurs labels, jamais les modifier.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Etat persistant : agentId + jeton (voir README.md, "Jeton"). Sans ce
+      # volume, un redemarrage du conteneur perd l agentId et re-enrole
+      # l agent comme un nouveau, ce qui oblige a re-approuver.
+      - ./data:/data
+      # Certificat/cle reels pour le relais HTTPS, si vous ne voulez pas du
+      # certificat auto-signe genere par defaut (voir RELAY_HTTPS_CERT/KEY
+      # ci-dessus, qui doivent alors pointer vers ces chemins montes) :
+      # - ./certs:/certs:ro

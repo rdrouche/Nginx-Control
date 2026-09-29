@@ -1,0 +1,20 @@
+provider: Cloudflare
+email: admin@example.com
+password: your-cloudflare-api-token
+domains:
+  - domain_name: example.com
+    sub_domains:
+      - www
+      - test
+ip_urls:
+  - https://api4.ipify.org
+  - https://api-ipv4.ip.sb/ip
+ip_type: IPv4
+interval: 600
+resolver: 1.1.1.1
+proxied: false
+web_panel:
+  enabled: true
+  addr: 0.0.0.0:9000
+  username: admin
+  password: changeme
