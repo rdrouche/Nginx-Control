@@ -83,7 +83,7 @@ jobs:
           SYNC_REF_URL="https://forge.rdr-it.com/Nginx/reference-files"
           ALERTING_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/alert-message"
           CHANGELOG_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/changelog"
-          ANALYZER_DEFAULT_IMAGE=""
+          ANALYZER_DEFAULT_IMAGE="forge.rdr-it.com/nginx/nginx-control/nginx-analyzer-agent:${PRIMARY_TAG}"
 
           # Construction de l'image
           docker build \
