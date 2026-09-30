@@ -122,6 +122,54 @@ check('chaque entree a une categorie et un override renseignes', () => {
     } catch (e) { console.log('  FAIL  buildSystemInfo()\n        ' + e.message); fail++; }
   })();
 
+  // ─── Git configure via git.yml (bug reel, retour utilisateur v12.49.3) ──────
+  // buildSystemInfo() affichait cfg.GIT_REPO_URL/cfg.GIT_TOKEN — resolus une
+  // seule fois au demarrage depuis l env — meme quand l operateur configure
+  // Git uniquement via git.yml (page Configuration), jamais touche a l env :
+  // la page Systeme montrait alors ces deux champs comme non configures alors
+  // que le deploiement Git fonctionnait reellement (chaque feature appelle
+  // getGitCfg(), qui fusionne git.yml par-dessus l env). Reproduit ici avec un
+  // CONFIG_DIR isole contenant un git.yml, et AUCUNE variable GIT_* dans l env.
+  await (async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path2 = require('path');
+    const tmp = fs.mkdtempSync(path2.join(os.tmpdir(), 'sysinfo-git-'));
+    fs.writeFileSync(path2.join(tmp, 'users.yml'), 'users: []\n');
+    fs.writeFileSync(path2.join(tmp, 'git.yml'),
+      'repo_url: https://forge.example.com/team/nginx-conf.git\n' +
+      'branch: production\n' +
+      'token: un-token-secret-de-test\n');
+    const savedEnv = { ...process.env };
+    // Retire toute variable GIT_* heritee de l environnement ambiant pour que
+    // le test reproduise vraiment "configure uniquement via git.yml".
+    for (const k of Object.keys(process.env)) if (k.startsWith('GIT_')) delete process.env[k];
+    process.env.USERS_FILE = path2.join(tmp, 'users.yml');
+    for (const id of [require.resolve('../lib/config'), require.resolve('../lib/git'), require.resolve('../lib/system-info')]) {
+      delete require.cache[id];
+    }
+    try {
+      const { buildSystemInfo } = require('../lib/system-info');
+      const info = await buildSystemInfo();
+      const gitCat = info.categories.find(c => c.name === 'Déploiement Git');
+      assert.ok(gitCat, 'categorie Déploiement Git manquante');
+      const repoRow  = gitCat.entries.find(e => e.key === 'GIT_REPO_URL');
+      const tokenRow = gitCat.entries.find(e => e.key === 'GIT_TOKEN');
+      const branchRow = gitCat.entries.find(e => e.key === 'GIT_BRANCH');
+      assert.strictEqual(repoRow.value, 'https://forge.example.com/team/nginx-conf.git',
+        'GIT_REPO_URL doit remonter depuis git.yml, pas seulement depuis l env');
+      assert.strictEqual(tokenRow.value, true,
+        'GIT_TOKEN doit etre signale configure quand il vient de git.yml');
+      assert.strictEqual(branchRow.value, 'production');
+      console.log('  PASS  buildSystemInfo() : GIT_REPO_URL/GIT_TOKEN/GIT_BRANCH configures via git.yml remontent correctement (sans rien dans l env)'); pass++;
+    } catch (e) { console.log('  FAIL  buildSystemInfo() : Git via git.yml\n        ' + e.message); fail++; }
+    process.env = savedEnv;
+    for (const id of [require.resolve('../lib/config'), require.resolve('../lib/git'), require.resolve('../lib/system-info')]) {
+      delete require.cache[id];
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  })();
+
   // ─── Traduction du contenu backend (categories, descriptions, reglages YAML) ──
   // Le frontend (public/assets/js/system-info.js) traduit ce contenu via des
   // tables de correspondance francais/fichier -> slug de cle data-i18n, avec

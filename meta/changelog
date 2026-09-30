@@ -1,3 +1,17 @@
+Version 1.0.1
+
+Bug fixes:
+
+- Regression in the ephemeral test container where Let's Encrypt certificates were no longer being accepted.
+- Session persistence was not working in auto-generated mode.
+- Fixed Git information display on the system page.
+- Fixed percentage display in analyses. analyses
+
+Improvement:
+
+- Removal of the version number from the login form
+
+--
 Version 1.0.0
 
 First release of Nginx Control

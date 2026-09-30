@@ -217,7 +217,6 @@ input:focus{border-color:#00e87a;box-shadow:0 0 0 2px #00e87a22}
 button{width:100%;padding:12px;background:#00e87a;color:#000;font-family:${SANS_STACK};font-size:14px;font-weight:700;border:none;border-radius:6px;cursor:pointer;transition:.15s;margin-top:4px}
 button:hover{background:#00ff85}
 .error{background:#ff4d6a22;border:1px solid #ff4d6a44;border-radius:6px;color:#ff4d6a;font-family:${MONO_STACK};font-size:12px;padding:10px 14px;margin-bottom:16px;display:${error ? 'block' : 'none'}}
-.footer{text-align:center;margin-top:20px;font-family:${MONO_STACK};font-size:10px;color:#5a6278}
 </style></head><body>
 <div class="wrap"><div class="card">
   <div class="logo">
@@ -235,7 +234,6 @@ button:hover{background:#00ff85}
     <button type="submit">${L.btn}</button>
   </form>
 </div>
-<div class="footer">v${VERSION} — Nginx Reverse Proxy Stack</div>
 </div>
 </body></html>`;
 }

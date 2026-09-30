@@ -136,5 +136,41 @@ check('l etat survit a un redemarrage', ()=>{
   assert.strictEqual(b2.isLearning(),false,'la date de depart doit etre conservee');
 });
 
+console.log('\ncouverture (bug reel : % incoherent avec plusieurs vhosts)');
+check('coverage() rapporte au nombre REEL de creneaux possibles (vhosts suivis x 168), jamais a 168 fixe', ()=>{
+  // Bug reel, retour utilisateur : "Usable time slots: 1888 / 168 (1123.8%)".
+  // this.buckets est une grille PAR VHOST (cle `${vhost}|${hourOfWeek}`) : avec
+  // plusieurs vhosts actifs, il existe vhosts*168 creneaux possibles, pas 168.
+  // Diviser par 168 fixe fait donc largement depasser 100% des qu on suit plus
+  // d un vhost — exactement le symptome signale.
+  const b = new Baseline({ minSamplesPerBucket: 1 }, { startedAt: OLD });
+  // 3 vhosts, chacun avec un creneau rempli (mardi 14h) : 3 creneaux utilisables
+  // sur un total reel de 3*168 = 504, jamais sur 168.
+  b.observe('a.example.com', tue(0), m(100));
+  b.observe('b.example.com', tue(0), m(100));
+  b.observe('c.example.com', tue(0), m(100));
+  const s = b.stats();
+  assert.strictEqual(s.vhostsTracked, 3, 'doit compter les vhosts distincts, pas les creneaux');
+  assert.strictEqual(s.bucketsUsable, 3);
+  assert.strictEqual(s.totalSlots, 3 * 168, 'le total doit suivre le nombre de vhosts suivis');
+  assert.ok(s.coverage <= 100, `coverage ne doit jamais depasser 100% (obtenu ${s.coverage}%)`);
+  assert.strictEqual(s.coverage, +(100 * 3 / (3 * 168)).toFixed(1));
+});
+check('un seul vhost retombe sur le comportement historique (total = 168)', ()=>{
+  const b = new Baseline({ minSamplesPerBucket: 1 }, { startedAt: OLD });
+  b.observe('site.fr', tue(0), m(100));
+  const s = b.stats();
+  assert.strictEqual(s.vhostsTracked, 1);
+  assert.strictEqual(s.totalSlots, 168);
+  assert.strictEqual(s.coverage, +(100 / 168).toFixed(1));
+});
+check('aucun vhost suivi -> pas de division par zero', ()=>{
+  const b = new Baseline({}, { startedAt: OLD });
+  const s = b.stats();
+  assert.strictEqual(s.vhostsTracked, 0);
+  assert.strictEqual(s.bucketsUsable, 0);
+  assert.strictEqual(s.coverage, 0);
+});
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail?1:0);

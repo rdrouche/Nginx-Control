@@ -47,7 +47,7 @@ const { createBackupZip, listBackups, restoreBackupZip, rotateBackups } = backup
 const { logEvent } = events;
 const {
   DIR_GIT_WORK, DIR_BACKUPS, DIR_SITES, DIR_CONF, DIR_SNIPPETS, DIR_STREAMS,
-  DIR_SSL, DIR_CERTS, DEPLOY_SYNC_SSL, NGINX_IMAGE, NGINX_CONTAINER, BACKUP_KEEP,
+  DIR_SSL, DEPLOY_SYNC_SSL, NGINX_IMAGE, NGINX_CONTAINER, BACKUP_KEEP,
 } = cfg;
 
 // Historic alias: the ephemeral test asks for the same network as production.
@@ -220,9 +220,27 @@ function cleanLegacyTestDirs() {
  */
 async function buildTestBinds(hostTmpDir) {
   // Destinations the sandbox replaces.
+  //
+  // Fix (regression, retour utilisateur v12.49.1) : /etc/letsencrypt sortait
+  // encore de cette liste jusqu ici, remplace par une COPIE des certificats
+  // dans le bac a sable (voir l historique retire ci-dessous). Sauf que
+  // Certbot ne stocke jamais les .pem directement dans live/<domaine>/ — ce
+  // sont des symlinks relatifs vers archive/<domaine>/fichierN.pem — et
+  // reproduire fidelement cette double arborescence par une copie s est
+  // avere plus fragile que necessaire (symlinks casses ailleurs, noms
+  // d archive divergents apres une reemission, permissions). Or il n y a
+  // structurellement aucune raison de copier ce dossier du tout : contrairement
+  // a sites/conf/snippets/streams/ssl (le contenu SOUS TEST, potentiellement
+  // different du contenu deploye), les certificats Let's Encrypt ne sont
+  // jamais modifies par ce dashboard — le test doit toujours voir exactement
+  // les memes certificats que la production, ni plus ni moins. Retire donc de
+  // la liste des remplacements : la boucle d heritage juste en dessous le
+  // reprend alors tel quel depuis le point de montage REEL du conteneur nginx
+  // de production (docker inspect), exactement comme pour les bases GeoIP —
+  // un simple bind mount du meme repertoire hote, jamais une copie.
   const overridden = new Set([
     '/etc/nginx/sites', '/etc/nginx/conf.d', '/etc/nginx/snippets',
-    '/etc/nginx/streams', '/ssl', '/etc/letsencrypt',
+    '/etc/nginx/streams', '/ssl',
   ]);
   // Destinations nginx writes to — left to the image's own writable dirs.
   const writable = new Set(['/var/log/nginx', '/var/cache/nginx', '/run', '/tmp']);
@@ -233,7 +251,6 @@ async function buildTestBinds(hostTmpDir) {
     `${hostTmpDir}/snippets:/etc/nginx/snippets:ro`,
     `${hostTmpDir}/streams:/etc/nginx/streams:ro`,
     `${hostTmpDir}/ssl:/ssl:ro`,
-    `${hostTmpDir}/certs:/etc/letsencrypt:ro`,
   ];
 
   const inherited = [];
@@ -277,29 +294,11 @@ async function testConfigEphemeral(srcDirs) {
       copyTree(src, path.join(tmpDir, section));   // recursive: ssl/cainternal/... etc.
     }
 
-    // Copy Let's Encrypt certs (read-only, needed for ssl_certificate directives)
-    // certs/ (Let's Encrypt) is never deployed, but the test container still needs
-    // it: vhosts reference /etc/letsencrypt/live/... in ssl_certificate directives.
-    // -L dereferences the symlinks LE keeps into archive/, so the real files land
-    // in the sandbox.
-    const certsLive = path.join(DIR_CERTS, 'live');
-    if (fs.existsSync(certsLive)) {
-      const certsTarget = path.join(tmpDir, 'certs');
-      fs.mkdirSync(certsTarget, { recursive: true });
-      try {
-        // dereference: true == `cp -rL` (follow symlinks into real files) —
-        // in-process, no shell involved (fix v12.21.1: this used to go
-        // through lib/git.js#runCmd(), a template-string exec() call; moving
-        // it off exec() entirely removes the temptation to ever interpolate
-        // a path into a shell command again).
-        fs.cpSync(certsLive, path.join(certsTarget, 'live'), { recursive: true, dereference: true });
-      } catch {
-        // Fallback for broken symlinks — `cp -r` copies a dangling symlink
-        // itself rather than failing; dereference:false does the same here.
-        try { fs.cpSync(certsLive, path.join(certsTarget, 'live'), { recursive: true, dereference: false }); }
-        catch (e) { console.warn('[test] Could not copy Let\'s Encrypt certs:', e.message || e); }
-      }
-    }
+    // Let's Encrypt certs are no longer copied into the sandbox — see the
+    // long comment on buildTestBinds()'s `overridden` set (v12.49.1):
+    // /etc/letsencrypt is inherited as a direct, read-only bind mount of the
+    // SAME host directory the production nginx container already uses, via
+    // the inherited-mounts loop below. Nothing to prepare here.
 
     // Translate to a host path — Docker cannot bind-mount a path that only
     // exists inside this container.
@@ -325,6 +324,33 @@ async function testConfigEphemeral(srcDirs) {
     const image = await getNginxImage();
     console.log(`[test] Ephemeral container: image=${image} host=${hostTmpDir} files=${copied}` +
                 (inherited.length ? ` inherited=${inherited.join(',')}` : ''));
+
+    // Mapping summary (retour utilisateur v12.49.0) : le conteneur de test
+    // disparait des sa fin (AutoRemove) et son entrypoint peut echouer avant
+    // meme que `nginx -t` ne s execute (regeneration de nginx.conf) — sans
+    // acces aux logs Docker de l hote, l operateur n avait alors aucun moyen
+    // de savoir COMMENT le test a ete monte (quelles sources, quels
+    // certificats trouves). Cette ligne est donc toujours prependue a la
+    // sortie du test, succes ou echec : elle repond directement a "comment
+    // est effectue le mappage ?" depuis le dashboard lui-meme, sans avoir a
+    // modifier docker-compose.yml ni a laisser trainer un conteneur.
+    // Fix (v12.49.1) : /etc/letsencrypt n est plus copie, c est desormais un
+    // bind mount hérité tel quel du conteneur nginx de production (voir
+    // buildTestBinds()) — le resume ci-dessous montre donc le chemin HOTE
+    // reellement monte, retrouve dans `testBinds` (le seul endroit qui le
+    // connaisse), plutot qu un decompte de domaines copies qui n a plus lieu
+    // d etre.
+    const certsBind = testBinds.find(b => b.endsWith(':/etc/letsencrypt:ro'));
+    const certsSummary = certsBind
+      ? `herite du conteneur nginx de production -> ${certsBind.slice(0, -':/etc/letsencrypt:ro'.length)}`
+      : `NON monte (le conteneur nginx de production est injoignable ou ne monte pas /etc/letsencrypt — voir "[test] Cannot inherit nginx mounts" dans les logs)`;
+    const mappingSummary =
+      `=== Mapping du test (bac a sable) ===\n` +
+      `sites/conf/snippets/streams : ${copied} fichier(s) copie(s)\n` +
+      `certificats Let's Encrypt (/etc/letsencrypt) : ${certsSummary}\n` +
+      `montages heritees du conteneur nginx : ${inherited.length ? inherited.join(', ') : '(aucun)'}\n` +
+      `image utilisee pour le test : ${image}\n` +
+      `======================================\n\n`;
 
     // Create container
     const createBody = {
@@ -363,7 +389,7 @@ async function testConfigEphemeral(srcDirs) {
     // AutoRemove handles cleanup; also try explicit remove as fallback
     await dockerCall('DELETE', `/containers/${cId}?force=1`).catch(() => {});
 
-    return { valid: exitCode === 0, exitCode, output: logText.trim(), image };
+    return { valid: exitCode === 0, exitCode, output: mappingSummary + logText.trim(), image };
   } finally {
     // Clean up temp dir
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}

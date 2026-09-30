@@ -40,7 +40,7 @@ const int = (name, fallback) => {
 // ne sert qu en dehors d un conteneur construit par ce Dockerfile (tests
 // locaux, `node server.js` execute directement) — l ARG du Dockerfile a lui
 // meme deja son propre defaut ("dev") pour un build sans --build-arg.
-const VERSION = str('APP_VERSION', '12.48.0');
+const VERSION = str('APP_VERSION', '12.49.3');
 
 // ─── Core ────────────────────────────────────────────────────────────────────
 const PORT            = int('PORT', 3000);

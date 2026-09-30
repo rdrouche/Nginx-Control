@@ -208,7 +208,7 @@ function anRenderBaseline(b, cardId, boxId) {
     const cov = document.createElement('div');
     cov.style.marginTop = '6px';
     cov.style.fontSize = '11px';
-    cov.textContent = t('analyzer.slotsUsable', { usable: b.bucketsUsable, coverage: b.coverage });
+    cov.textContent = t('analyzer.slotsUsable', { usable: b.bucketsUsable, total: b.totalSlots, coverage: b.coverage });
     wrap.appendChild(cov);
     box.appendChild(wrap);
     return;
@@ -217,7 +217,7 @@ function anRenderBaseline(b, cardId, boxId) {
   const ok = document.createElement('div');
   ok.className = 'an-learn';
   ok.style.color = 'var(--green)';
-  ok.textContent = t('analyzer.active', { usable: b.bucketsUsable, coverage: b.coverage });
+  ok.textContent = t('analyzer.active', { usable: b.bucketsUsable, total: b.totalSlots, coverage: b.coverage });
   box.appendChild(ok);
 }
 

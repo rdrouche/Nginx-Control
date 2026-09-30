@@ -22,6 +22,7 @@ const cfg = require('./config');
 const { getContainerId, dockerCall } = require('./docker');
 const { resolveMenuVisibility } = require('./menu-visibility');
 const { resolveFlag } = require('./feature-flags');
+const { getGitCfg } = require('./git');
 
 /** One row of the "override" column — env is the overwhelmingly common case. */
 const ENV = (name) => ({ kind: 'env', var: name });
@@ -87,19 +88,30 @@ const ENTRIES = [
     description: "IP/CIDR autorisees a fixer X-Forwarded-For (v12.21.1). Seule une requete dont l adresse socket figure ici peut faire confiance a cet en-tete pour le rate-limit de connexion et les logs d audit ; sinon l adresse TCP directe est utilisee, quoi que le client envoie." },
 
   // ─── Git & backups ─────────────────────────────────────────────────────
-  { key: 'GIT_REPO_URL', category: 'Déploiement Git', value: cfg.GIT_REPO_URL, default: '', override: ENV('GIT_REPO_URL'),
+  // Bug fixe (retour utilisateur, v12.49.3) : ces six lignes affichaient
+  // cfg.GIT_* — la valeur resolue UNE FOIS au demarrage depuis l environnement
+  // seulement — alors que lib/git.js#getGitCfg() permet de configurer repoUrl/
+  // branch/backupBranch/token/userName/userEmail depuis git.yml (page
+  // Configuration), surcharge par-dessus l env, RELUE A CHAQUE APPEL. Un
+  // operateur qui configurait Git uniquement via git.yml (sans jamais toucher
+  // GIT_REPO_URL/GIT_TOKEN dans .env) voyait donc la page Systeme afficher ces
+  // deux champs comme non configures, alors que le deploiement Git
+  // fonctionnait bel et bien (chaque feature appelle getGitCfg(), jamais
+  // cfg.GIT_* directement). Valeur/override recalcules a chaque requete dans
+  // buildSystemInfo(), meme registre ENV_OR_YAML que WAF_MENU plus haut.
+  { key: 'GIT_REPO_URL', category: 'Déploiement Git', value: cfg.GIT_REPO_URL, default: '', override: ENV_OR_YAML('GIT_REPO_URL', 'git.yml'),
     description: "URL du depot Git de reference. Vide = deploiement Git desactive (edition directe des fichiers montes selon ALLOW_EDIT/ALLOW_CREATE)." },
-  { key: 'GIT_BRANCH', category: 'Déploiement Git', value: cfg.GIT_BRANCH, default: 'main', override: ENV('GIT_BRANCH'),
+  { key: 'GIT_BRANCH', category: 'Déploiement Git', value: cfg.GIT_BRANCH, default: 'main', override: ENV_OR_YAML('GIT_BRANCH', 'git.yml'),
     description: "Branche source du deploiement." },
-  { key: 'GIT_BACKUP_BRANCH', category: 'Déploiement Git', value: cfg.GIT_BACKUP_BRANCH, default: 'backup', override: ENV('GIT_BACKUP_BRANCH'),
+  { key: 'GIT_BACKUP_BRANCH', category: 'Déploiement Git', value: cfg.GIT_BACKUP_BRANCH, default: 'backup', override: ENV_OR_YAML('GIT_BACKUP_BRANCH', 'git.yml'),
     description: "Branche ou l etat precedent est pousse avant chaque deploiement, pour pouvoir revenir en arriere." },
-  { key: 'GIT_TOKEN', category: 'Déploiement Git', sensitive: true, value: !!cfg.GIT_TOKEN, default: false, override: ENV('GIT_TOKEN'),
+  { key: 'GIT_TOKEN', category: 'Déploiement Git', sensitive: true, value: !!cfg.GIT_TOKEN, default: false, override: ENV_OR_YAML('GIT_TOKEN', 'git.yml'),
     description: "Jeton d authentification HTTPS vers le depot (alternative a GIT_SSH_KEY)." },
   { key: 'GIT_SSH_KEY', category: 'Déploiement Git', sensitive: true, value: !!cfg.GIT_SSH_KEY, default: false, override: ENV('GIT_SSH_KEY'),
-    description: "Cle privee SSH vers le depot (alternative a GIT_TOKEN)." },
-  { key: 'GIT_USER_NAME', category: 'Déploiement Git', value: cfg.GIT_USER_NAME, default: 'Nginx Dashboard', override: ENV('GIT_USER_NAME'),
+    description: "Cle privee SSH vers le depot (alternative a GIT_TOKEN). Reste env-only : c est un chemin DANS ce conteneur (bind-mount), pas un reglage de comportement — jamais surcharge par git.yml (voir getGitCfg())." },
+  { key: 'GIT_USER_NAME', category: 'Déploiement Git', value: cfg.GIT_USER_NAME, default: 'Nginx Dashboard', override: ENV_OR_YAML('GIT_USER_NAME', 'git.yml'),
     description: "Identite Git (auteur des commits) utilisee par le dashboard." },
-  { key: 'GIT_USER_EMAIL', category: 'Déploiement Git', value: cfg.GIT_USER_EMAIL, default: 'dashboard@localhost', override: ENV('GIT_USER_EMAIL'),
+  { key: 'GIT_USER_EMAIL', category: 'Déploiement Git', value: cfg.GIT_USER_EMAIL, default: 'dashboard@localhost', override: ENV_OR_YAML('GIT_USER_EMAIL', 'git.yml'),
     description: "Email Git associe aux commits du dashboard." },
   { key: 'BACKUP_KEEP', category: 'Déploiement Git', value: cfg.BACKUP_KEEP, default: 20, override: ENV('BACKUP_KEEP'),
     description: "Nombre de sauvegardes ZIP locales conservees avant rotation (la plus ancienne est supprimee)." },
@@ -322,6 +334,17 @@ async function buildSystemInfo() {
     // refleter un jeton/secret genere depuis l'interface sans redemarrage.
     if (row.key === 'API_TOKEN') row.value = cfg.apiTokenActive();
     if (row.key === 'WEBHOOK_SECRET') row.value = cfg.isWebhookSecretConfigured();
+    // Bug fixe (retour utilisateur, v12.49.3) : meme raisonnement — getGitCfg()
+    // fusionne git.yml par-dessus l'env et doit etre relu a chaque requete
+    // (un operateur peut modifier git.yml depuis la page Configuration sans
+    // redemarrer le dashboard), jamais fige a la valeur cfg.GIT_* resolue une
+    // seule fois au demarrage.
+    if (row.key === 'GIT_REPO_URL') row.value = getGitCfg().repoUrl;
+    if (row.key === 'GIT_BRANCH') row.value = getGitCfg().branch;
+    if (row.key === 'GIT_BACKUP_BRANCH') row.value = getGitCfg().backupBranch;
+    if (row.key === 'GIT_TOKEN') row.value = !!getGitCfg().token;
+    if (row.key === 'GIT_USER_NAME') row.value = getGitCfg().userName;
+    if (row.key === 'GIT_USER_EMAIL') row.value = getGitCfg().userEmail;
     if (row.key === 'WAF_MENU') {
       row.value = `${menuVisibility.waf.mode} (${menuVisibility.waf.source}) -> ${menuVisibility.waf.visible ? 'affiche' : 'masque'}`;
       if (menuVisibility.waf.mode === 'auto') {

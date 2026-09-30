@@ -194,17 +194,36 @@ class Baseline {
     };
   }
 
+  /**
+   * Bug fixe (retour utilisateur, v12.49.3) : `coverage` divisait le nombre de
+   * creneaux remplis par HOURS_PER_WEEK (168) sans jamais tenir compte du
+   * nombre de vhosts suivis — alors que `this.buckets` est une grille PAR
+   * VHOST (cle `${vhost}|${hourOfWeek}`, voir _key() plus haut) : avec 12
+   * vhosts actifs, il existe jusqu a 12*168 = 2016 creneaux possibles, pas
+   * 168. D ou des valeurs incoherentes comme "1888 / 168 (1123.8%)" des qu un
+   * deploiement suit plus d un vhost. Le nombre de creneaux possibles est
+   * desormais compte reellement (vhosts suivis x 168), et le taux de
+   * couverture rapporte a CE total — jamais au nombre fixe de 168, qui n a de
+   * sens que pour un seul vhost.
+   */
   stats() {
     let filled = 0;
-    for (const arr of this.buckets.values())
+    const vhosts = new Set();
+    for (const [key, arr] of this.buckets) {
+      vhosts.add(key.slice(0, key.lastIndexOf('|')));
       if (arr.length >= this.cfg.minSamplesPerBucket) filled++;
+    }
+    const vhostsTracked = vhosts.size;
+    const totalSlots = Math.max(1, vhostsTracked) * HOURS_PER_WEEK;
     return {
       learning: this.isLearning(),
       daysElapsed: +this.learningDaysElapsed().toFixed(1),
       daysRequired: this.cfg.learningDays,
       bucketsTracked: this.buckets.size,
       bucketsUsable: filled,
-      coverage: +(100 * filled / HOURS_PER_WEEK).toFixed(1),
+      vhostsTracked,
+      totalSlots,
+      coverage: +(100 * filled / totalSlots).toFixed(1),
     };
   }
 }

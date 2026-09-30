@@ -377,9 +377,24 @@ function setEventLogger(fn) { onEvent = fn || (() => {}); }
  * a routine image update. A store can be injected to persist them; without one
  * the behaviour is unchanged.
  *
- * Persistence only makes sense when SESSION_SECRET is fixed in the environment:
- * a generated secret changes at every boot, and the restored tokens would no
- * longer correspond to anything.
+ * Persistence only makes sense when SESSION_SECRET stays the same across a
+ * restart, since it signs every token: restoring a session issued under a
+ * secret that no longer applies would just hand back a token that fails its
+ * signature check on the very next request.
+ *
+ * Bug fixe (retour utilisateur, v12.49.3) : cette fonction verifiait
+ * `process.env.SESSION_SECRET` directement — vrai uniquement si l operateur a
+ * defini la variable d environnement lui-meme. Depuis la v12.32.0, le mode
+ * "automatique" (rien defini) genere une valeur UNE SEULE FOIS et la persiste
+ * dans `.generated-secrets.json` (voir `lib/config.js#resolveGeneratedSecret()`)
+ * precisement pour qu elle reste stable d un redemarrage a l autre — mais
+ * cette fonction n avait jamais ete mise a jour pour en tenir compte, et
+ * continuait a refuser toute restauration des qu aucune variable d env n etait
+ * definie. Resultat : en mode automatique (le cas par defaut, sans .env
+ * personnalise), un redemarrage deconnectait systematiquement tout le monde,
+ * exactement le bug que la v12.32.0 pensait avoir eradique. `cfg.SESSION_SECRET`
+ * est la valeur REELLEMENT utilisee pour signer les tokens (env si definie,
+ * sinon la valeur generee-et-persistee) : c est elle qu il faut verifier.
  */
 let store = null;
 function setSessionStore(s) {
@@ -398,11 +413,13 @@ function persistSessions() {
 
 function restoreSessions() {
   if (!store) return;
-  if (!process.env.SESSION_SECRET) {
-    // Without a fixed secret the tokens issued before the restart are
-    // meaningless; say so rather than restoring sessions that cannot work.
-    console.warn('[auth] SESSION_SECRET absent — les sessions ne survivront pas '
-      + 'a un redemarrage. Definissez-le pour eviter une deconnexion a chaque mise a jour.');
+  if (!cfg.SESSION_SECRET) {
+    // Defensive only: cfg.SESSION_SECRET is always resolved (env value, or a
+    // generated one persisted to .generated-secrets.json) unless persisting
+    // that generated file itself failed (read-only config dir, say) — see
+    // resolveGeneratedSecret()'s own warning in that case.
+    console.warn('[auth] SESSION_SECRET indisponible — les sessions ne survivront pas '
+      + 'a un redemarrage.');
     return;
   }
   try {

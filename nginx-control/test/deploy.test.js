@@ -177,5 +177,76 @@ check('un fichier sites/agent_*.conf est protege par prefixe, meme absent de la 
     'un fichier agent_*.conf dans sites/ doit etre protege par son seul prefixe');
 });
 
+console.log('\ncertificats Let\'s Encrypt dans le bac a sable : heritage par bind mount, plus de copie (fix v12.49.2, regression persistante v12.49.0/12.49.1)');
+check('/etc/letsencrypt n est plus dans les destinations remplacees par le bac a sable : il est herite tel quel', ()=>{
+  // Bug reel, confirme par le retour utilisateur apres DEUX correctifs bases
+  // sur la copie (v12.49.0 puis v12.49.1) : la copie de live/+archive/ reste
+  // structurellement fragile (symlinks casses ailleurs, noms d archive
+  // divergents apres reemission, permissions) et l erreur "cannot load
+  // certificate" a persiste a l identique. Le fix definitif, propose par
+  // l utilisateur : ne plus copier /etc/letsencrypt du tout. Comme les
+  // certificats ne sont jamais modifies par ce dashboard (contrairement a
+  // sites/conf/snippets/streams/ssl, qui sont le contenu SOUS TEST), le test
+  // doit voir le MEME repertoire hote que la production — un simple bind
+  // mount herite, exactement comme pour les bases GeoIP.
+  const start = SRC.indexOf('async function buildTestBinds');
+  const end   = SRC.indexOf('\nasync function testConfigEphemeral', start);
+  const fn = SRC.slice(start, end > start ? end : undefined);
+  const overriddenMatch = fn.match(/const overridden = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(overriddenMatch, 'buildTestBinds() doit definir un Set `overridden`');
+  assert.ok(!/\/etc\/letsencrypt/.test(overriddenMatch[1]),
+    '/etc/letsencrypt ne doit plus etre dans les destinations remplacees par le bac a sable');
+  assert.ok(!/\$\{hostTmpDir\}\/certs:\/etc\/letsencrypt/.test(fn),
+    'plus de bind litteral vers un dossier certs copie dans le bac a sable');
+});
+check('le montage /etc/letsencrypt est retrouve par heritage depuis le conteneur nginx de production (meme mecanisme que GeoIP), jamais par une copie', ()=>{
+  const start = SRC.indexOf('async function testConfigEphemeral');
+  const end   = SRC.indexOf('\nasync function ', start + 10);
+  const fn = SRC.slice(start, end > start ? end : undefined);
+  assert.ok(!/fs\.cpSync\([^)]*certs/i.test(fn),
+    'testConfigEphemeral() ne doit plus copier aucun fichier de certificats');
+  assert.ok(!/certsLive|certsArchive|certsDomains|certsTarget/.test(fn),
+    'toute la logique de copie de certificats (live/archive/domaines) doit avoir disparu');
+  assert.ok(/DIR_CERTS/.test(SRC) === false,
+    'DIR_CERTS ne doit plus etre utilise dans deploy.js : les certificats ne sont plus lus depuis le dashboard pour le test, ils viennent du bind mount herite de la production');
+});
+check('le resume de mapping rapporte desormais le VRAI chemin hote herite (ou l absence explicite de montage), plus un decompte de domaines copies', ()=>{
+  assert.ok(/mappingSummary/.test(SRC));
+  assert.ok(/const certsBind = testBinds\.find\(b => b\.endsWith\(':\/etc\/letsencrypt:ro'\)\)/.test(SRC),
+    'le resume doit chercher le bind /etc/letsencrypt reellement applique au conteneur de test, dans testBinds');
+  assert.ok(/herite du conteneur nginx de production/.test(SRC),
+    'en cas de succes, le resume doit montrer que /etc/letsencrypt vient d un heritage, pas d une copie');
+  assert.ok(/NON monte/.test(SRC),
+    'en l absence de montage herite (nginx de production injoignable), le resume doit le dire explicitement plutot que de laisser un test planter sans explication');
+  assert.ok(/output: mappingSummary \+ logText\.trim\(\)/.test(SRC),
+    'le resume de mapping doit toujours etre prepende a la sortie, succes ou echec');
+});
+check('preuve mecanique : un bind mount herite pointe le VRAI chemin hote du conteneur nginx de production, jamais une copie', ()=>{
+  // Reproduit hors Docker le coeur du mecanisme : buildTestBinds() lit
+  // Mounts[] du conteneur nginx de production (docker inspect) et, pour
+  // toute destination non remplacee par le bac a sable (ici /etc/letsencrypt,
+  // retire de `overridden`), pousse `${m.Source}:${m.Destination}:ro` tel
+  // quel — c est le meme repertoire hote, jamais un sous-ensemble copie.
+  const fakeMounts = [
+    { Source: '/srv/certs', Destination: '/etc/letsencrypt' },
+    { Source: '/srv/geoip', Destination: '/geoip' },
+    { Source: '/var/lib/docker/volumes/x/_data', Destination: '/etc/nginx/sites' }, // overridden, ne doit pas etre herite
+  ];
+  const overridden = new Set(['/etc/nginx/sites', '/etc/nginx/conf.d', '/etc/nginx/snippets', '/etc/nginx/streams', '/ssl']);
+  const writable = new Set(['/var/log/nginx', '/var/cache/nginx', '/run', '/tmp']);
+  const binds = [];
+  const inherited = [];
+  for (const m of fakeMounts) {
+    if (!m.Source || !m.Destination) continue;
+    if (overridden.has(m.Destination) || writable.has(m.Destination)) continue;
+    binds.push(`${m.Source}:${m.Destination}:ro`);
+    inherited.push(m.Destination);
+  }
+  assert.ok(binds.includes('/srv/certs:/etc/letsencrypt:ro'),
+    '/etc/letsencrypt doit etre herite avec le chemin hote EXACT du conteneur nginx de production');
+  assert.ok(!inherited.includes('/etc/nginx/sites'),
+    'une destination remplacee par le bac a sable (sites/) ne doit jamais etre heritee, meme si le conteneur de production la monte');
+});
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail?1:0);

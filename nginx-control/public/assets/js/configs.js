@@ -215,7 +215,13 @@ async function submitNewConfigFile() {
       setTimeout(() => flash.remove(), 4000);
     }, 100);
   } else {
-    const errMsg = d?.error || (d?.testResult?.output) || 'Erreur inconnue';
+    // Fix (retour utilisateur v12.49.0) : d?.error valait toujours la chaine
+    // generique "Config test failed" des que le test echouait, donc
+    // `d?.error || d?.testResult?.output` n affichait jamais que ce libelle
+    // fixe — le vrai texte de nginx -t (et le mappage du bac a sable, voir
+    // features/deploy.js#testConfigEphemeral()) restait invisible pour
+    // l operateur. Inversion de l ordre pour privilegier le detail.
+    const errMsg = d?.testResult?.output || d?.error || 'Erreur inconnue';
     err.textContent = errMsg;
     err.style.display = '';
   }
@@ -301,7 +307,10 @@ async function saveCfgEdit() {
     }, 100);
   } else {
     if (saveBtn) saveBtn.textContent = 'Tester + Sauvegarder';
-    const errMsg = d?.error || (d?.testResult?.output) || 'Erreur inconnue';
+    // Meme fix qu au-dessus dans submitNewConfigFile() (v12.49.0) : privilegier
+    // le detail du test (nginx -t + mappage du bac a sable) au libelle
+    // generique "Config test failed".
+    const errMsg = d?.testResult?.output || d?.error || 'Erreur inconnue';
     alert('Erreur : ' + errMsg);
   }
 }
