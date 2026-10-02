@@ -1,0 +1,18 @@
+# SMTP Configuration — Nginx Dashboard notifications
+enable: false
+
+host: smtp.example.com
+port: 587
+
+# Security: tls (STARTTLS) | ssl (SMTPS) | plain
+security: tls
+
+# Ignore SSL certificate errors (self-signed)
+ignore_ssl: false
+
+from: dashboard@example.com
+from_name: Nginx Dashboard
+
+# Leave empty if no authentication required
+username: user@example.com
+password: secret

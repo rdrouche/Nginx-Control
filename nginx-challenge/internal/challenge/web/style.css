@@ -1,0 +1,14 @@
+:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1c2330;--mut:#5a6578;--ac:#2f6fed;--er:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#12161d;--fg:#e8ecf3;--mut:#9aa6b8;--ac:#6ea0ff;--er:#ff7a6b}}
+html,body{height:100%;margin:0}
+body{display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{width:min(92vw,28rem);text-align:center;padding:2rem 1rem}
+h1{font-size:1.25rem;margin:0 0 .5rem}
+p{margin:.5rem 0;color:var(--mut)}
+.bar{height:6px;border-radius:3px;background:rgba(127,127,127,.25);overflow:hidden;margin:1.25rem 0}
+#nc-bar{height:100%;width:30%;background:var(--ac);animation:nc 1.2s ease-in-out infinite}
+.done #nc-bar{animation:none;width:100%}
+@keyframes nc{0%{margin-left:-30%}100%{margin-left:100%}}
+.err{color:var(--er)}
+button{font:inherit;padding:.5rem 1.25rem;border-radius:6px;border:1px solid var(--ac);background:var(--ac);color:#fff;cursor:pointer}
+@media (prefers-reduced-motion:reduce){#nc-bar{animation:none;width:60%}}

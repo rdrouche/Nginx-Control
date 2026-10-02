@@ -334,6 +334,7 @@ func dialTunnel(ctx context.Context, dashboardURL, token string, insecureSkipVer
 
 	req := "GET /api/agent/tunnel HTTP/1.1\r\n" +
 		"Host: " + u.Host + "\r\n" +
+		"User-Agent: " + userAgent + "\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Key: " + key + "\r\n" +

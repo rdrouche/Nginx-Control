@@ -1,0 +1,62 @@
+# Exemple GitHub Actions — déclenche un test puis un déploiement Git du
+# dashboard nginx-dashboard via son API. Voir examples/ci/README.md pour la
+# création du jeton et des secrets DASHBOARD_URL / DEPLOY_TOKEN.
+#
+# A copier dans .github/workflows/deploy-nginx-config.yml du dépôt de
+# CONFIGURATION nginx (celui que le dashboard suit via config/git.yml),
+# pas dans le dépôt du dashboard lui-même.
+
+name: Déploiement config Nginx
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}   # déclenchement manuel depuis l'onglet Actions
+
+jobs:
+  test:
+    # Tourne sur chaque push et chaque PR : un jeton limite a "test" suffit,
+    # il ne peut jamais declencher un vrai deploiement meme si le secret fuit.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tester la configuration (nginx -t dans un conteneur ephemere)
+        env:
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          DEPLOY_TOKEN:  ${{ secrets.DEPLOY_TOKEN_TEST }}
+        run: |
+          set -e
+          http_code=$(curl -sS -o response.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${DEPLOY_TOKEN}" \
+            "${DASHBOARD_URL}/api/git/test")
+          echo "--- reponse ($http_code) ---"
+          cat response.json
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::Test de configuration echoue (HTTP $http_code)"
+            exit 1
+          fi
+
+  deploy:
+    # Seulement sur push vers main (jamais sur une PR) ou declenchement
+    # manuel — jeton complet, reserve a ce job.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deployer (pull + test + sauvegarde + synchronisation + reload)
+        env:
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          DEPLOY_TOKEN:  ${{ secrets.DEPLOY_TOKEN_DEPLOY }}
+        run: |
+          set -e
+          http_code=$(curl -sS -o response.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${DEPLOY_TOKEN}" \
+            "${DASHBOARD_URL}/api/git/deploy")
+          echo "--- reponse ($http_code) ---"
+          cat response.json
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::Deploiement echoue (HTTP $http_code) — voir response.json ci-dessus"
+            exit 1
+          fi
+          echo "Deploiement reussi."

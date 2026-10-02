@@ -1,0 +1,41 @@
+# Visibilite des elements de menu optionnels — voir README.md, section
+# "Interface — theme, en-tete personnalise, menu", pour le detail complet.
+#
+# Priorite ENV > ce fichier > defaut. Une variable d environnement
+# (MENU_WAF, MENU_API, ...) l emporte toujours sur la valeur ecrite ici si
+# elle est definie ; ce fichier l emporte lui-meme sur le defaut cable en
+# dur. Relu a chaque appel (pas de cache) — un changement ici prend effet
+# au prochain rafraichissement du menu, sans redemarrer le dashboard.
+#
+# Chaque reglage accepte "show" (toujours affiche) ou "hide" (toujours
+# masque). "auto" (quand disponible) laisse le dashboard decider a partir
+# d un signal reel — voir le commentaire de chaque reglage ci-dessous.
+
+# waf_menu : "auto" detecte le suffixe -waf/-coraza de l image nginx en
+# cours d execution (meme heuristique que la verification de version).
+# Valeurs : auto, show, hide.
+waf_menu: auto
+
+# godns_menu : pas de mode "auto" ici — rien dans une image de conteneur
+# n indique un usage de DNS dynamique. Valeurs : show, hide.
+godns_menu: show
+
+# api_menu : "auto" masque l item si aucun API_TOKEN n est configure —
+# inutile d afficher une page qui ne peut rien faire sans lui.
+# Valeurs : auto, show, hide.
+api_menu: auto
+
+# webhooks_menu : meme logique qu api_menu, mais sur WEBHOOK_SECRET.
+# Valeurs : auto, show, hide.
+webhooks_menu: auto
+
+# docker_autoconfig_menu : "auto" reflete le `enable: true/false` de
+# config/docker-autoconfig.yml — desactive par defaut (v12.41.0, opt-in),
+# donc masque par defaut tant que cette fonctionnalite n a pas ete activee
+# explicitement. Valeurs : auto, show, hide.
+docker_autoconfig_menu: auto
+
+# agents_menu : meme logique que docker_autoconfig_menu, mais sur le
+# `enable: true/false` de config/agents.yml (Hotes distants). Desactive par
+# defaut (v12.41.0, opt-in). Valeurs : auto, show, hide.
+agents_menu: auto

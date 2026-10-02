@@ -1,0 +1,24 @@
+# GoDNS — Dynamic DNS
+# Dashboard manages the GoDNS container lifecycle
+
+enable: false
+
+# Docker image
+container_image: timothyye/godns:latest
+
+# Container name
+container_name: godns
+
+# GoDNS web panel port (internal, not exposed on host)
+port: 9000
+
+# Config format: yaml or json
+# Determines which file is used: godns.config.yaml or godns.config.json
+config_format: yaml
+
+# Absolute host path to the config directory (nginx-dashboard/config/)
+config_host_path: /containers/nginx-rproxy/nginx-dashboard/config
+
+# Webpanel config
+web_panel_enabled: false
+web_panel_external_port: 9000

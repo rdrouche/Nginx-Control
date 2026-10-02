@@ -1,0 +1,10 @@
+*.md
+Dockerfile
+.dockerignore
+**/*_test.go
+**/testdata
+test/
+analyzer
+analyzer-bin
+*.db
+*.test

@@ -92,3 +92,20 @@ func TestOnceExitCode_EnrollSucceeds_NoDocker_ExitsNonZero(t *testing.T) {
 		t.Error("sans jeton disponible, --once doit aussi sortir avec un code non nul")
 	}
 }
+
+func TestNeedsEnrollment(t *testing.T) {
+	cases := []struct {
+		id, token string
+		want      bool
+	}{
+		{"", "", true},                  // premier demarrage sans jeton : enrolement
+		{"", "agt_abc", false},          // agent cree depuis le dashboard : deja approuve
+		{"3f9a2b7c1e4d5a6b", "", false}, // deja enrole, en attente du jeton
+		{"3f9a2b7c1e4d5a6b", "agt_abc", false},
+	}
+	for _, c := range cases {
+		if got := needsEnrollment(c.id, c.token); got != c.want {
+			t.Errorf("needsEnrollment(%q,%q) = %v, attendu %v", c.id, c.token, got, c.want)
+		}
+	}
+}

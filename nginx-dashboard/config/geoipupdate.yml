@@ -1,0 +1,44 @@
+# geoipupdate — mise a jour des bases MaxMind (GeoLite2) depuis le dashboard
+#
+# Gere le cycle de vie d un unique conteneur `maxmindinc/geoipupdate`, sur le
+# meme modele que certbot.yml : le dashboard demarre/arrete le conteneur et
+# peut declencher une mise a jour immediate, mais ce fichier reste edite a la
+# main — comme pour certbot, aucune route ne le reecrit depuis l interface.
+#
+# Necessite un compte MaxMind gratuit (https://www.maxmind.com/en/geolite2/signup)
+# pour obtenir account_id et license_key ci-dessous.
+
+enable: false
+
+# Image du conteneur geoipupdate
+container_image: maxmindinc/geoipupdate:latest
+
+# Identifiants MaxMind — license_key est un secret : ne le committez pas en
+# clair dans un depot public. account_id seul ne permet pas de televerser
+# quoi que ce soit, il n a de sens qu associe a license_key.
+account_id:
+license_key:
+
+# Bases a telecharger, separees par des espaces. Les trois principales :
+#   GeoLite2-City GeoLite2-Country GeoLite2-ASN
+# Doit rester coherent avec ce que lib/geoip.js et nginx-analyzer attendent
+# (GeoLite2-City.mmdb, GeoLite2-Country.mmdb, GeoLite2-ASN.mmdb) — retirer une
+# edition ici fait disparaitre la donnee correspondante partout ou elle est
+# utilisee (geolocalisation IP, alertes par pays), pas seulement son affichage.
+edition_ids: GeoLite2-City GeoLite2-Country GeoLite2-ASN
+
+# Frequence de verification par l image elle-meme, en heures. L image officielle
+# boucle en interne (verifie, dort, recommence) : ce n est pas un cron externe.
+# 168h = une semaine, largement suffisant — MaxMind republie ces bases au plus
+# deux fois par semaine.
+frequency_hours: 168
+
+# Chemin ABSOLU sur l HOTE du dossier partage avec nginx / nginx-dashboard /
+# nginx-analyzer pour les fichiers .mmdb — doit etre exactement le meme
+# dossier que celui monte en `./geoip_data` dans votre docker-compose.yml,
+# sans quoi les bases telechargees ici resteraient invisibles des autres
+# conteneurs (le meme piege que webroot_host_path/certs_host_path pour
+# certbot : le dashboard ne peut pas deviner le chemin hote de son propre
+# projet compose depuis l interieur d un conteneur).
+# Example: /containers/nginx-rproxy/geoip_data
+geoip_host_path:

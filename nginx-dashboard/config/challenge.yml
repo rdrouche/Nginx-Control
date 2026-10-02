@@ -1,0 +1,39 @@
+# Challenge HTTP — réglages et conteneur géré depuis Nginx Control (v12.65.0).
+# Éditable dans « Éditeur de configuration » ; après modification des clés
+# challenge_*, utiliser « Régénérer et recharger nginx » (page Challenge HTTP).
+# Priorité : variables NC_* (environnement) > ce fichier > défaut.
+# Les clés challenge_* l'emportent sur celles de blocklists.yml (compatibilité v12.63/12.64).
+#
+# ── nginx ──────────────────────────────────────────────────────────────────
+# challenge_enable: false            # écrire les directives dans nginx
+# challenge_engine: builtin          # builtin (conteneur nginx-challenge) | anubis
+# challenge_upstream: ""             # défaut : nginx-challenge:8080 / anubis:8923
+# challenge_resolver: 127.0.0.11     # DNS Docker
+# challenge_exempt_path_regex: '^/[.]well-known/'
+# challenge_exempt_ua_regex: ""       # ex. '^NginxControl$' (User-Agent des requêtes sortantes de Nginx Control)
+#
+# ── profils par vhost ──────────────────────────────────────────────────────
+# Un snippet dédié par vhost (snippets/challenge-<name>.conf), avec son mode et ses
+# exemptions propres ; une exemption absente hérite du réglage global ci-dessus.
+# name : minuscules, chiffres, _ (30 max) — mode : listed | all | allbots (défaut all)
+# À inclure à la place des snippets globaux dans le server{} concerné.
+# profiles:
+#   - name: forgejo
+#     mode: allbots
+#     exempt_ua_regex: '^forgejo-runner/'
+#   - name: wiki
+#     mode: all
+#     exempt_path_regex: '^/(api/|[.]well-known/)'
+#
+# ── conteneur géré par le dashboard ────────────────────────────────────────
+# enable: false                     # démarrer/recréer le conteneur au boot
+# container_image: ""               # défaut : CHALLENGE_DEFAULT_IMAGE / ANUBIS_DEFAULT_IMAGE
+# secret: ""                        # défaut : généré et conservé (.generated-secrets.json)
+# difficulty_bits: 16               # 8–64 (builtin) ; +1 bit = travail x2, ~28 = plusieurs minutes, >30 quasi impossible pour un navigateur
+# cookie_hours: 24                  # 1–720 (builtin)
+# language: auto                    # page de vérification : auto (navigateur, repli en) | fr | en
+# goodbots: true                    # laisser passer les bons robots (vérif. DNS inverse)
+# goodbots_extra: ""                # nom|regex-UA|.suffixe[,.suffixe][;nom2|…]
+# anubis_difficulty: 4              # 1–8 (anubis)
+# redirect_domains: ""              # anubis : domaines de redirection autorisés
+# cookie_domain: ""                 # anubis : domaine du cookie

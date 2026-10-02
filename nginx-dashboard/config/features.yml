@@ -1,0 +1,20 @@
+# Interrupteurs marche/arret transversaux — voir README.md, section "Message
+# important (alertes distantes)" pour le detail complet de chaque reglage.
+#
+# Priorite ENV > ce fichier > defaut. Une variable d environnement
+# (ALERTING_ENABLE, ...) l emporte toujours sur la valeur ecrite ici si elle
+# est definie ; ce fichier l emporte lui-meme sur le defaut cable en dur.
+# Relu a chaque appel (pas de cache) — un changement ici prend effet
+# immediatement, sans redemarrer le dashboard.
+#
+# Distinct de menu.yml (qui ne gere QUE la visibilite d un item de menu,
+# jamais si une fonctionnalite tourne reellement) : ce fichier decide si le
+# code s execute. D autres interrupteurs simples pourront le rejoindre ici
+# sans qu un nouveau fichier de configuration soit necessaire a chaque fois.
+
+# alerting_enable : active/desactive le message important (alertes
+# distantes, voir ALERTING_URL). Desactive par defaut (opt-in) — un fichier
+# distant peut etre configure (ALERTING_URL injectee au build, commune a
+# toute une flotte d images) sans que chaque instance aille le consulter
+# tant que ce reglage n est pas passe a true.
+alerting_enable: false

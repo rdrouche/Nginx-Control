@@ -1,0 +1,28 @@
+# Analytique en temps reel par vhost (page GoAccess) — un conteneur
+# `ngx-goaccess-<id>` par journal, cree/detruit par le dashboard.
+#
+# Tous les champs sont optionnels : un champ absent ou vide ici retombe sur
+# la variable Docker correspondante si elle est definie — rien ne casse pour
+# un deploiement deja configure en .env. Quand un champ EST renseigne ici,
+# il prend le dessus. Modifiable depuis la page Configuration ; l image et
+# le rafraichissement s appliquent au prochain conteneur cree ou redemarre,
+# sans avoir a redemarrer le dashboard lui-meme.
+#
+# DIR_GOACCESS reste exclusivement une variable Docker (chemin de montage
+# fixe par docker-compose.yml, meme categorie que DIR_SITES/DIR_CONF), pas
+# un reglage de comportement — absent de ce fichier volontairement.
+
+# Image Docker GoAccess.
+# Laisser vide pour garder la valeur actuelle (variable Docker
+# GOACCESS_IMAGE, "allinurl/goaccess:latest" par defaut).
+container_image:
+
+# Format de log par defaut, si l auto-detection par contenu de fichier
+# echoue. Laisser vide pour garder la valeur actuelle (variable Docker
+# GOACCESS_LOG_FORMAT, "COMBINED" par defaut).
+log_format:
+
+# Intervalle de rafraichissement du rapport temps reel, en secondes.
+# Laisser vide pour garder la valeur actuelle (variable Docker
+# GOACCESS_REFRESH, 30 par defaut).
+refresh_seconds:
