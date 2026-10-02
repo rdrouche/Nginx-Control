@@ -1,0 +1,321 @@
+name: Build images for Nginx Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag(s) Docker à build (séparés par une virgule, ex: 1.0.0,stable,latest)'
+        required: true
+        type: string
+        default: 'nightly'
+
+jobs:
+  build-and-push:
+    runs-on: docker 
+    container:
+      image: docker:latest
+    env:
+      DOCKER_HOST: unix:///var/run/docker.sock
+    # Security : check if on tag  
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Check branch (Fail if main)
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "::error::Le build est interdit depuis la branche main !"
+            exit 1
+          fi
+          
+      - name: Install Node.js 
+        run: apk add --no-cache nodejs npm
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Optimize index.html (Minify)
+        run: |
+          # Installation temporaire de html-minifier-terser
+          npm install -g html-minifier-terser
+          
+          # Minification : suppression espaces, commentaires, retours à la ligne
+          html-minifier-terser \
+            --collapse-whitespace \
+            --remove-comments \
+            --remove-optional-tags \
+            --remove-redundant-attributes \
+            --remove-script-type-attributes \
+            --minify-css true \
+            --minify-js true \
+            -o nginx-control/public/index.html \
+            nginx-control/public/index.html
+      
+      - name: Login to Forgejo Registry
+        run: echo "${{ secrets.REPO_TOKEN }}" | docker login ${{ github.server_url }} -u ${{ github.actor }} --password-stdin
+
+      - name: Build and Push - Nginx Control
+        run: |
+          # Local Registry 
+          REGISTRY="forge.rdr-it.com/nginx/nginx-control"
+
+          # Définition des noms d'images
+          IMAGE_LOCAL="${REGISTRY}/nginx-control"
+          
+          # 1. Récupération de la chaîne brute des tags
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAGS="${{ github.event.inputs.tag_name }}"
+          else
+            RAW_TAGS="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # 2. Nettoyage de la liste (gestion des espaces éventuels autour des virgules)
+          # "1.0.0, stable, latest" devient une liste utilisable par Bash
+          TAG_LIST=$(echo "$RAW_TAGS" | tr ',' ' ')
+
+          # 3. Extraction du premier tag pour s'en servir comme tag principal pour le build
+          PRIMARY_TAG=$(echo $TAG_LIST | awk '{print $1}')  
+
+          # BRANDING
+          BRANDING_KOFI="https://ko-fi.com/rdrit0980"
+          BRANDING_SITE_LABEL="Nginx Control DEV"
+          BRANDING_SITE="https://nginx-control.rdr-it.com/"
+          BRANDING_REPO="https://github.com/rdrouche/Nginx-Control"
+          BRANDING_DOC="https://docs.nginx-control.rdr-it.com/"
+
+          # VERSION CONTROL
+          DASHBOARD_VERSION_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/version-nginx-control"        
+          NGINX_VERSION_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/version-nginx"
+
+          # COMPONENT CONTROL
+          SYNC_REF_URL="https://forge.rdr-it.com/Nginx/reference-files"
+          ALERTING_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/alert-message"
+          CHANGELOG_URL="https://forge.rdr-it.com/Nginx/nginx-control/raw/branch/main/meta/changelog"
+          ANALYZER_DEFAULT_IMAGE="forge.rdr-it.com/nginx/nginx-control/nginx-analyzer-agent-go:${PRIMARY_TAG}"
+          CHALLENGE_DEFAULT_IMAGE="forge.rdr-it.com/nginx/nginx-control/nginx-challenge-http:${PRIMARY_TAG}"
+
+          # Construction de l'image
+          docker build \
+            --build-arg APP_VERSION=${PRIMARY_TAG} \
+            --build-arg APP_REVISION=${{ github.sha }} \
+            --build-arg APP_CREATED=${BUILD_DATE} \
+            --build-arg BRANDING_KOFI=${BRANDING_KOFI} \
+            --build-arg BRANDING_SITE_LABEL="${BRANDING_SITE_LABEL}" \
+            --build-arg BRANDING_SITE=${BRANDING_SITE} \
+            --build-arg BRANDING_REPO=${BRANDING_REPO} \
+            --build-arg BRANDING_DOC=${BRANDING_DOC} \
+            --build-arg DASHBOARD_VERSION_URL=${DASHBOARD_VERSION_URL} \
+            --build-arg NGINX_VERSION_URL=${NGINX_VERSION_URL} \
+            --build-arg SYNC_REF_URL=${SYNC_REF_URL} \
+            --build-arg ALERTING_URL=${ALERTING_URL} \
+            --build-arg CHANGELOG_URL=${CHANGELOG_URL} \
+            --build-arg ANALYZER_DEFAULT_IMAGE=${ANALYZER_DEFAULT_IMAGE} \
+            --label org.opencontainers.image.title="nginx-control" \
+            --label org.opencontainers.image.description="Nginx Control Nightly Not Use In PROD" \
+            --label org.opencontainers.image.authors="Romain Drouche contact@rdr-it.com" \
+            --label org.opencontainers.image.version=$PRIMARY_TAG \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t $IMAGE_LOCAL:$PRIMARY_TAG \
+            -f nginx-control/Dockerfile nginx-control/ \
+            --no-cache
+
+          # 5. Boucle pour appliquer chaque tag et le pusher sur le registre
+          for TAG in $TAG_LIST; do
+            echo "--- Traitement du tag : $TAG ---"
+            if [ "$TAG" != "$PRIMARY_TAG" ]; then
+              docker tag $IMAGE_LOCAL:$PRIMARY_TAG $IMAGE_LOCAL:$TAG
+            fi
+            docker push $IMAGE_LOCAL:$TAG
+          done
+
+      - name: Build and Push - Nginx Analyzer Agent
+        run: |
+          # Local Registry 
+          REGISTRY="forge.rdr-it.com/nginx/nginx-control"
+
+          # Définition des noms d'images
+          IMAGE_LOCAL="${REGISTRY}/nginx-analyzer-agent"
+          
+          # 1. Récupération de la chaîne brute des tags
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAGS="${{ github.event.inputs.tag_name }}"
+          else
+            RAW_TAGS="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # 2. Nettoyage de la liste (gestion des espaces éventuels autour des virgules)
+          # "1.0.0, stable, latest" devient une liste utilisable par Bash
+          TAG_LIST=$(echo "$RAW_TAGS" | tr ',' ' ')
+
+          # 3. Extraction du premier tag pour s'en servir comme tag principal pour le build
+          PRIMARY_TAG=$(echo $TAG_LIST | awk '{print $1}')
+
+          # Construction de l'image
+          docker build \
+            --build-arg APP_VERSION=${PRIMARY_TAG} \
+            --build-arg APP_REVISION=${{ github.sha }} \
+            --build-arg APP_CREATED=${BUILD_DATE} \
+            --label org.opencontainers.image.title="nginx-analyzer-agent" \
+            --label org.opencontainers.image.description="Analyzer Agent for Nginx Control" \
+            --label org.opencontainers.image.authors="Romain Drouche contact@rdr-it.com" \
+            --label org.opencontainers.image.version=$PRIMARY_TAG \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t $IMAGE_LOCAL:$PRIMARY_TAG \
+            -f nginx-analyzer-agent/Dockerfile nginx-analyzer-agent/ \
+            --no-cache
+
+          # 5. Boucle pour appliquer chaque tag et le pusher sur le registre
+          for TAG in $TAG_LIST; do
+            echo "--- Traitement du tag : $TAG ---"
+            if [ "$TAG" != "$PRIMARY_TAG" ]; then
+              docker tag $IMAGE_LOCAL:$PRIMARY_TAG $IMAGE_LOCAL:$TAG
+            fi
+            docker push $IMAGE_LOCAL:$TAG
+          done
+
+      # NGINX ANALYZER GO
+      - name: Nginx Analyzer GO - Build and Push
+        run: |
+          # Local Registry 
+          REGISTRY="forge.rdr-it.com/nginx/nginx-control"
+
+          # Définition des noms d'images
+          IMAGE_LOCAL="${REGISTRY}/nginx-analyzer-agent-go"
+          
+          # 1. Récupération de la chaîne brute des tags
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAGS="${{ github.event.inputs.tag_name }}"
+          else
+            RAW_TAGS="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # 2. Nettoyage de la liste (gestion des espaces éventuels autour des virgules)
+          # "1.0.0, stable, latest" devient une liste utilisable par Bash
+          TAG_LIST=$(echo "$RAW_TAGS" | tr ',' ' ')
+
+          # 3. Extraction du premier tag pour s'en servir comme tag principal pour le build
+          PRIMARY_TAG=$(echo $TAG_LIST | awk '{print $1}')
+
+          # Construction de l'image
+          docker build \
+            --build-arg APP_VERSION=${PRIMARY_TAG} \
+            --build-arg APP_REVISION=${{ github.sha }} \
+            --build-arg APP_CREATED=${BUILD_DATE} \
+            --label org.opencontainers.image.title="nginx-analyzer-agent-go" \
+            --label org.opencontainers.image.description="Analyzer Agent GO for Nginx Control" \
+            --label org.opencontainers.image.authors="Romain Drouche contact@rdr-it.com" \
+            --label org.opencontainers.image.version=$PRIMARY_TAG \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t $IMAGE_LOCAL:$PRIMARY_TAG \
+            -f nginx-analyzer-agent-go/Dockerfile nginx-analyzer-agent-go/ \
+            --no-cache
+
+          # 5. Boucle pour appliquer chaque tag et le pusher sur le registre
+          for TAG in $TAG_LIST; do
+            echo "--- Traitement du tag : $TAG ---"
+            if [ "$TAG" != "$PRIMARY_TAG" ]; then
+              docker tag $IMAGE_LOCAL:$PRIMARY_TAG $IMAGE_LOCAL:$TAG
+            fi
+            docker push $IMAGE_LOCAL:$TAG
+          done
+
+      # NGINX CHALLENGE HTTP
+      - name: Nginx Challenge HTTP - Build and Push
+        run: |
+          # Local Registry 
+          REGISTRY="forge.rdr-it.com/nginx/nginx-control"
+
+          # Définition des noms d'images
+          IMAGE_LOCAL="${REGISTRY}/nginx-challenge-http"
+          
+          # 1. Récupération de la chaîne brute des tags
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAGS="${{ github.event.inputs.tag_name }}"
+          else
+            RAW_TAGS="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # 2. Nettoyage de la liste (gestion des espaces éventuels autour des virgules)
+          # "1.0.0, stable, latest" devient une liste utilisable par Bash
+          TAG_LIST=$(echo "$RAW_TAGS" | tr ',' ' ')
+
+          # 3. Extraction du premier tag pour s'en servir comme tag principal pour le build
+          PRIMARY_TAG=$(echo $TAG_LIST | awk '{print $1}')
+
+          # Construction de l'image
+          docker build \
+            --build-arg APP_VERSION=${PRIMARY_TAG} \
+            --build-arg APP_REVISION=${{ github.sha }} \
+            --build-arg APP_CREATED=${BUILD_DATE} \
+            --label org.opencontainers.image.title="nginx-challenge-http" \
+            --label org.opencontainers.image.description="Challenge HTTP GO for Nginx Control" \
+            --label org.opencontainers.image.authors="Romain Drouche contact@rdr-it.com" \
+            --label org.opencontainers.image.version=$PRIMARY_TAG \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t $IMAGE_LOCAL:$PRIMARY_TAG \
+            -f nginx-challenge/Dockerfile nginx-challenge/ \
+            --no-cache
+
+          # 5. Boucle pour appliquer chaque tag et le pusher sur le registre
+          for TAG in $TAG_LIST; do
+            echo "--- Traitement du tag : $TAG ---"
+            if [ "$TAG" != "$PRIMARY_TAG" ]; then
+              docker tag $IMAGE_LOCAL:$PRIMARY_TAG $IMAGE_LOCAL:$TAG
+            fi
+            docker push $IMAGE_LOCAL:$TAG
+          done
+        
+      # NGINX AGENT FOR DOCKER
+      - name: Build and Push - Nginx Agent
+        run: |
+          # Local Registry 
+          REGISTRY="forge.rdr-it.com/nginx/nginx-control"
+
+          # Définition des noms d'images
+          IMAGE_LOCAL="${REGISTRY}/nginx-agent"
+          
+          # 1. Récupération de la chaîne brute des tags
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAGS="${{ github.event.inputs.tag_name }}"
+          else
+            RAW_TAGS="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # 2. Nettoyage de la liste (gestion des espaces éventuels autour des virgules)
+          # "1.0.0, stable, latest" devient une liste utilisable par Bash
+          TAG_LIST=$(echo "$RAW_TAGS" | tr ',' ' ')
+
+          # 3. Extraction du premier tag pour s'en servir comme tag principal pour le build
+          PRIMARY_TAG=$(echo $TAG_LIST | awk '{print $1}')
+
+          # Construction de l'image
+          docker build \
+            --build-arg APP_VERSION=${PRIMARY_TAG} \
+            --build-arg APP_REVISION=${{ github.sha }} \
+            --build-arg APP_CREATED=${BUILD_DATE} \
+            --label org.opencontainers.image.title="nginx-agent-for-nginx-control" \
+            --label org.opencontainers.image.description="Nginx Agent For Nginx Control" \
+            --label org.opencontainers.image.authors="Romain Drouche contact@rdr-it.com" \
+            --label org.opencontainers.image.version=$PRIMARY_TAG \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t $IMAGE_LOCAL:$PRIMARY_TAG \
+            -f nginx-agent/Dockerfile nginx-agent/ \
+            --no-cache
+
+          # 5. Boucle pour appliquer chaque tag et le pusher sur le registre
+          for TAG in $TAG_LIST; do
+            echo "--- Traitement du tag : $TAG ---"
+            if [ "$TAG" != "$PRIMARY_TAG" ]; then
+              docker tag $IMAGE_LOCAL:$PRIMARY_TAG $IMAGE_LOCAL:$TAG
+            fi
+            docker push $IMAGE_LOCAL:$TAG
+          done
