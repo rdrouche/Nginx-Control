@@ -33,8 +33,8 @@ const PAGES = [
   'control', 'cache', 'logs', 'notif-history', 'crowdsec', 'blocklists',
   'analyzer', 'waf', 'geomap', 'digest', 'goaccess', 'api', 'webhooks',
   'godns', 'certbot', 'docker-autoconfig', 'agents', 'geoipupdate',
-  'error-pages', 'notify', 'scheduler', 'config-editor', 'system-info',
-  'admin',
+  'error-pages', 'challenge', 'notify', 'scheduler', 'config-editor', 'system-info',
+  'admin', 'containers',
 ];
 
 const PAGE_TO_SLUG = {};

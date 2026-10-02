@@ -182,7 +182,7 @@ check('chaque entree a une categorie et un override renseignes', () => {
     const en = require('../public/assets/lang/en.json');
     const fr = require('../public/assets/lang/fr.json');
     // Categories identiques en francais et en anglais : pas besoin de cle.
-    const IDENTICAL = new Set(['Docker', 'GeoIP', 'CrowdSec', 'GoAccess', 'Branding', 'Menu', 'GoDNS']);
+    const IDENTICAL = new Set(['Docker', 'GeoIP', 'CrowdSec', 'GoAccess', 'Branding', 'Menu', 'GoDNS', 'Challenge']);
     const SLUG = {
       'Général': 'general', 'Comportement de déploiement': 'deployBehavior',
       'Sécurité & sessions': 'security', 'Déploiement Git': 'gitDeploy',
@@ -218,7 +218,7 @@ check('chaque entree a une categorie et un override renseignes', () => {
     const SLUG = {
       'users.yml': 'users_yml', 'smtp.yml': 'smtp_yml', 'notifications.yml': 'notifications_yml',
       'scheduler.yml': 'scheduler_yml', 'certbot.yml': 'certbot_yml', 'certbot-dns.yml': 'certbot_dns_yml',
-      'godns.yml': 'godns_yml', 'geoipupdate.yml': 'geoipupdate_yml', 'error-pages.yml': 'error_pages_yml',
+      'godns.yml': 'godns_yml', 'geoipupdate.yml': 'geoipupdate_yml', 'error-pages.yml': 'error_pages_yml', 'challenge.yml': 'challenge_yml',
       'crowdsec.yml': 'crowdsec_yml', 'git.yml': 'git_yml', 'analyzer.yml': 'analyzer_yml',
       'blocklists.yml': 'blocklists_yml', 'deploy-tokens.yml': 'deploy_tokens_yml',
       'docker-autoconfig.yml': 'docker_autoconfig_yml',

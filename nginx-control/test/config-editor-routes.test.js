@@ -87,7 +87,7 @@ function login(username, password) {
   check('liste -> exactement les treize fichiers, tous absents au depart', () => {
     assert.strictEqual(list.status, 200);
     const keys = list.body.files.map(f => f.key).sort();
-    assert.deepStrictEqual(keys, ['agents', 'analyzer', 'blocklists', 'certbot', 'certbot-dns', 'crowdsec', 'deploy-tokens', 'docker-autoconfig', 'error-pages', 'geoipupdate', 'git', 'goaccess', 'godns']);
+    assert.deepStrictEqual(keys, ['agents', 'analyzer', 'blocklists', 'certbot', 'certbot-dns', 'challenge', 'crowdsec', 'deploy-tokens', 'docker-autoconfig', 'error-pages', 'geoipupdate', 'git', 'goaccess', 'godns']);
     assert.ok(list.body.files.every(f => f.exists === false));
   });
 
@@ -117,6 +117,11 @@ function login(username, password) {
 
   const writeNoContent = await req('POST', '/api/config-editor/file', ck, { key: 'certbot-dns' });
   check('sans content -> 400', () => assert.strictEqual(writeNoContent.status, 400));
+
+  const chal1 = await req('POST', '/api/config-editor/file', ck, { key: 'challenge', content: 'challenge_enable: true\n' });
+  check('challenge.yml : cle challenge_* modifiee -> regenerateChallenge', () => assert.strictEqual(chal1.body.regenerateChallenge, true));
+  const chal2 = await req('POST', '/api/config-editor/file', ck, { key: 'challenge', content: 'challenge_enable: true\ndifficulty_bits: 18\n' });
+  check('challenge.yml : seule une cle du conteneur modifiee -> pas de rappel', () => assert.strictEqual(chal2.body.regenerateChallenge, undefined));
 
   srv.kill();
   fs.rmSync(appDir, { recursive: true, force: true });

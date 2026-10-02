@@ -26,7 +26,7 @@ const SYSINFO_CATEGORY_SLUG = {
   'Sync & mises à jour': 'syncUpdates',
   'Rétention': 'retention',
   'Alertes': 'alerting',
-  // Docker, GeoIP, CrowdSec, GoAccess, Branding, Menu, GoDNS : identiques en
+  // Docker, GeoIP, CrowdSec, GoAccess, Branding, Menu, GoDNS, Challenge : identiques en
   // francais et en anglais, pas besoin d une cle de traduction.
 };
 
@@ -34,7 +34,7 @@ const SYSINFO_CATEGORY_SLUG = {
 const SYSINFO_YAML_PURPOSE_SLUG = {
   'users.yml': 'users_yml', 'smtp.yml': 'smtp_yml', 'notifications.yml': 'notifications_yml',
   'scheduler.yml': 'scheduler_yml', 'certbot.yml': 'certbot_yml', 'certbot-dns.yml': 'certbot_dns_yml',
-  'godns.yml': 'godns_yml', 'geoipupdate.yml': 'geoipupdate_yml', 'error-pages.yml': 'error_pages_yml',
+  'godns.yml': 'godns_yml', 'geoipupdate.yml': 'geoipupdate_yml', 'error-pages.yml': 'error_pages_yml', 'challenge.yml': 'challenge_yml',
   'crowdsec.yml': 'crowdsec_yml', 'git.yml': 'git_yml', 'analyzer.yml': 'analyzer_yml',
   'blocklists.yml': 'blocklists_yml',
   'deploy-tokens.yml': 'deploy_tokens_yml',

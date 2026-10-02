@@ -210,7 +210,8 @@ function effectiveRepoUrl(g) {
 function runCmd(args, opts = {}) {
   const g = getGitCfg();
   return new Promise((resolve, reject) => {
-    execFile('git', args, { timeout: 120000, maxBuffer: 10 * 1024 * 1024, env: gitEnv(g), ...opts },
+    // User-Agent unique (sans version) aussi pour git sur HTTP(S) : filtrable cote nginx.
+    execFile('git', ['-c', `http.userAgent=${cfg.HTTP_USER_AGENT}`, ...args], { timeout: 120000, maxBuffer: 10 * 1024 * 1024, env: gitEnv(g), ...opts },
       (err, stdout, stderr) => {
         if (err) {
           reject({

@@ -79,7 +79,7 @@ async function fetchRefFileList(section) {
   const apiUrl = `${u.origin}/api/v1/repos/${owner}/${repo}/contents/${buildRefPath(section)}?ref=main`;
   return new Promise((resolve) => {
     const proto = apiUrl.startsWith('https') ? require('https') : http;
-    const req = proto.request(Object.assign(new URL(apiUrl), { method: 'GET', headers: { 'User-Agent': 'nginx-dashboard' }, timeout: 10000 }), (res) => {
+    const req = proto.request(Object.assign(new URL(apiUrl), { method: 'GET', headers: { 'User-Agent': cfg.HTTP_USER_AGENT }, timeout: 10000 }), (res) => {
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => { try { const r = JSON.parse(data); resolve(Array.isArray(r) ? r.filter(f => f.type === 'file' && (f.name.endsWith('.conf') || f.name.endsWith('.conf.DISABLE'))) : []); } catch { resolve([]); } });
@@ -93,7 +93,7 @@ async function fetchRefFileList(section) {
 async function fetchRefFileContent(rawUrl) {
   return new Promise((resolve) => {
     const proto = rawUrl.startsWith('https') ? require('https') : http;
-    const req = proto.request(Object.assign(new URL(rawUrl), { method: 'GET', headers: { 'User-Agent': 'nginx-dashboard' }, timeout: 10000 }), (res) => {
+    const req = proto.request(Object.assign(new URL(rawUrl), { method: 'GET', headers: { 'User-Agent': cfg.HTTP_USER_AGENT }, timeout: 10000 }), (res) => {
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => resolve(data));

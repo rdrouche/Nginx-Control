@@ -2,6 +2,11 @@
 /**
  * Direct nginx control: reload and configuration test.
  *
+ * `POST /api/nginx/test-ephemeral` (v12.54.0) runs the same sandboxed
+ * `nginx -t` as the Git test and the config add/edit pipeline — a throwaway
+ * nginx container fed with a copy of the ACTIVE configuration — and returns
+ * its complete output, mapping summary included.
+ *
  * The verbose test runs `nginx -t` and, when it fails, follows with `nginx -T`
  * so the operator sees the full effective configuration next to the error —
  * the usual next question after a syntax failure.
@@ -18,6 +23,18 @@ const { send } = httpLib;
 const { execNginx, restartContainer, getContainerStats } = docker;
 const { sendNotification } = notify;
 const { logEvent } = events;
+
+// testConfigEphemeral lives in features/deploy.js ; features never import each
+// other, so server.js (the composition root) injects it — same pattern as
+// features/configs.js.
+let testConfigEphemeral = async () => { throw new Error('deploy not wired — call setDeps({ testConfigEphemeral })'); };
+function setDeps({ testConfigEphemeral: t } = {}) {
+  if (typeof t === 'function') testConfigEphemeral = t;
+}
+
+// One sandbox run at a time: each one creates a container and copies the whole
+// configuration, so a double click (or a script in a loop) must not stack them.
+let ephemeralRunning = false;
 
 function register(router) {
   router.post('/api/nginx/reload', async ({ req, res, session, url, pathname }) => {
@@ -67,6 +84,39 @@ function register(router) {
     }
   });
 
+  /**
+   * Test of the active configuration in a throwaway nginx container.
+   * Unlike `/api/nginx/test` (exec inside the production container), this never
+   * touches the running server and uses the image/mounts the deploy pipeline
+   * uses, so its verdict is the one a deploy or an edit would get. Always 200
+   * with `valid` + the full `output` (an invalid config is a normal result for
+   * the UI); a 500 means the sandbox itself could not run (Docker unreachable,
+   * unmappable workspace).
+   */
+  router.post('/api/nginx/test-ephemeral', async ({ res, session }) => {
+    if (!hasPerm(session, PERMS.NGINX_CONTROL)) return httpLib.forbidden(res);
+    if (ephemeralRunning) return send(res, 409, { error: 'Un test éphémère est déjà en cours' });
+    ephemeralRunning = true;
+    const t0 = Date.now();
+    try {
+      const r = await testConfigEphemeral({});
+      const durationMs = Date.now() - t0;
+      logEvent('nginx.test.ephemeral', { valid: r.valid, exitCode: r.exitCode, image: r.image, durationMs, by: session.username }, 'api');
+      if (!r.valid) {
+        sendNotification('nginx_test_error',
+          '[Nginx Dashboard] ephemeral nginx -t FAILED',
+          'The ephemeral nginx configuration test failed.\n\n' + (r.output || '')
+        ).catch(() => {});
+      }
+      return send(res, 200, { ok: true, valid: !!r.valid, exitCode: r.exitCode, image: r.image, output: r.output || '', durationMs });
+    } catch (e) {
+      logEvent('nginx.test.ephemeral.error', { error: e.message || String(e), by: session.username }, 'api');
+      return send(res, 500, { ok: false, error: e.message || String(e) });
+    } finally {
+      ephemeralRunning = false;
+    }
+  });
+
   router.post('/api/nginx/test-verbose', async ({ req, res, session, url, pathname }) => {
     // Fix (audit finding, Basse/"Sécurité et durcissement"): this used to
     // gate on VIEW_CONFIGS — a read-only permission a plain viewer holds —
@@ -101,4 +151,4 @@ function register(router) {
   });
 }
 
-module.exports = { register };
+module.exports = { register, setDeps };

@@ -16,6 +16,7 @@
 
 const https = require('https');
 const http  = require('http');
+const cfg   = require('./config');
 
 const IPV4_RE = /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/;
 
@@ -25,7 +26,7 @@ function fetchText(url, timeoutMs = 5000) {
     let u;
     try { u = new URL(url); } catch { return resolve(null); }
     const lib = u.protocol === 'http:' ? http : https;
-    const req = lib.get(u, { timeout: timeoutMs, headers: { 'user-agent': 'nginx-dashboard/ip-check' } }, (res) => {
+    const req = lib.get(u, { timeout: timeoutMs, headers: { 'user-agent': cfg.HTTP_USER_AGENT } }, (res) => {
       if (res.statusCode !== 200) { res.resume(); return resolve(null); }
       let body = '';
       res.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });

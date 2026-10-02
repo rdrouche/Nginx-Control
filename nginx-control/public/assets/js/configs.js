@@ -91,7 +91,7 @@ async function loadConfigs(){
       <div class="cfg-files" id="sec-${s.key}">
         ${files.length===0
           ? `<div class="cfg-file" style="cursor:default;color:var(--text3)">Aucun fichier</div>`
-          : files.map((f,fi)=>{const idx=cfgFileIndex++;cfgFileMap[idx]=f;return`<div class="cfg-file" id="cfi-${idx}" onclick="openFile(${idx})">
+          : files.map((f,fi)=>{const idx=cfgFileIndex++;cfgFileMap[idx]=f;f._section=s.key;return`<div class="cfg-file" id="cfi-${idx}" onclick="openFile(${idx})">
               <div class="cfg-file-icon ${f.enabled?'enabled':'disabled'}"></div>
               ${h(f.name)}
               <span style="margin-left:auto;font-size:9px;color:var(--text3)">${fmtB(f.size)}</span>
@@ -100,6 +100,29 @@ async function loadConfigs(){
     </div>`;
   }).join('');
   document.getElementById('conf-count').textContent=totalFiles;
+  cfgFilterFiles();
+}
+
+// Filtre par nom : masque les fichiers non correspondants, déplie les sections
+// qui ont des résultats, met à jour le compteur de chaque section.
+function cfgFilterFiles(){
+  const q=((document.getElementById('cfg-search')||{}).value||'').trim().toLowerCase();
+  ['sites','conf','snippets','streams'].forEach(key=>{
+    const sec=document.getElementById('sec-'+key);
+    if(!sec) return;
+    const rows=[...sec.querySelectorAll('.cfg-file[id^="cfi-"]')];
+    let n=0;
+    rows.forEach(r=>{
+      const ok=!q||r.textContent.toLowerCase().includes(q);
+      r.style.display=ok?'':'none';
+      if(ok) n++;
+    });
+    const tag=document.getElementById('tag-'+key);
+    if(tag) tag.textContent=q?(n+' / '+rows.length):(rows.length+' fichiers');
+    const box=sec.closest('.cfg-section');
+    if(box) box.style.display=(q&&!n)?'none':'';
+    if(q&&n){ sec.style.display=''; }
+  });
 }
 
 function toggleSection(key){

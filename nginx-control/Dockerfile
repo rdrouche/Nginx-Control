@@ -84,6 +84,13 @@ ENV ALERTING_POLL_INTERVAL_MIN=${ALERTING_POLL_INTERVAL_MIN}
 # you push your own build, still overridable at runtime via .env.
 ARG ANALYZER_DEFAULT_IMAGE="forge.rdr-it.com/dockerfiles/nginx-analyzer:latest"
 ENV ANALYZER_DEFAULT_IMAGE=${ANALYZER_DEFAULT_IMAGE}
+# Conteneur du challenge navigateur (v12.63.0) : image maison nginx-challenge et
+# image Anubis. Memes regles que ci-dessus : fixables au build, surchargeables a
+# l'execution, et config/challenge.yml (container_image) reste prioritaire.
+ARG CHALLENGE_DEFAULT_IMAGE="forge.rdr-it.com/dockerfiles/nginx-challenge:latest"
+ENV CHALLENGE_DEFAULT_IMAGE=${CHALLENGE_DEFAULT_IMAGE}
+ARG ANUBIS_DEFAULT_IMAGE="ghcr.io/techarohq/anubis:latest"
+ENV ANUBIS_DEFAULT_IMAGE=${ANUBIS_DEFAULT_IMAGE}
 
 # ─── Branding ─────────────────────────────────────────────────────────────────
 ARG BRANDING_KOFI=""

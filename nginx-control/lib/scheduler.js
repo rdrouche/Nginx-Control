@@ -1,18 +1,30 @@
 'use strict';
 /**
- * Recurring tasks: nginx reload, backups, GoAccess restarts, certificate
- * expiry checks.
+ * Planificateur de tâches récurrentes.
  *
- * A minimal cron matcher rather than a dependency — the patterns in use are
- * simple, and the loop ticks once a minute. Configuration is re-read on every
- * tick so an edit takes effect without a restart.
+ * Les tâches (rechargement/redémarrage nginx, redémarrage analyzer, sauvegarde,
+ * résumé, redémarrage GoAccess…) sont stockées en base (lib/scheduler-store.js),
+ * créées depuis la page « Scheduler » (formulaire visuel) et exécutées par le
+ * registre lib/scheduler-tasks.js. Le fichier `scheduler.yml` n'est plus lu que
+ * pour l'import initial.
  *
- * The scheduled reload always runs `nginx -t` first and gives up when it fails:
- * a broken configuration must not be pushed live by a background job at 3 a.m.
+ * La boucle tourne toutes les 30 s mais n'agit qu'une fois par minute ; les
+ * tâches sont relues à chaque minute, donc une modification faite dans
+ * l'interface prend effet sans redémarrage. Une tâche n'est jamais lancée deux
+ * fois en parallèle (si la précédente exécution dure encore, la suivante est
+ * ignorée).
  *
- * Tasks that belong to a feature (deploying, restarting GoAccess) are injected
- * by server.js rather than imported, keeping this module free of feature
- * dependencies.
+ * Les tâches de nginx (reload, restart) exécutent d'abord `nginx -t` et
+ * s'abstiennent si la configuration est invalide : une configuration cassée ne
+ * doit pas être poussée en production par un job à 3 h du matin.
+ *
+ * Les dépendances qui appartiennent à une feature (sauvegarde, GoAccess,
+ * analyzer…) sont injectées par server.js plutôt qu'importées, ce qui garde ce
+ * module libre de toute dépendance vers les features.
+ *
+ * Restent codées en dur, hors liste de tâches : la vérification quotidienne de
+ * l'expiration des certificats (règles de notifications.yml) et le recheck SSL
+ * des agents distants (toutes les 5 minutes).
  */
 
 const cfg    = require('./config');
@@ -20,11 +32,12 @@ const docker = require('./docker');
 const notify = require('./notify');
 const certs  = require('./certs');
 const events = require('./events');
-const digest = require('./digest');
 const { pushNotification } = require('./notifications');
+const store    = require('./scheduler-store');
+const registry = require('./scheduler-tasks');
+const { cronMatches } = require('./schedule-cron');
 
 const { execNginx } = docker;
-const { GIT_REPO_URL } = cfg;
 const { sendNotification, sendMail, reloadAll, getSchedConfig, getNotifConfig,
         loadSmtpConfig, loadNotifConfig, loadSchedConfig } = notify;
 const { getAllCertificates, adaptiveThreshold } = certs;
@@ -50,6 +63,7 @@ function pushCertNotificationOnce(type, level, certKey, message, data) {
 const tasks = {
   createBackupZip:   async () => { throw new Error('backup not wired'); },
   gitBackupPush:     async () => { throw new Error('git backup not wired'); },
+  restartAnalyzer: async () => { throw new Error('analyzer restart not wired'); },
   listGoAccessSources: () => [],
   getGoAccessContainerStatus: async () => ({ running: false }),
   restartGoAccessContainer:   async () => {},
@@ -69,153 +83,72 @@ const tasks = {
   // Defaults to the real implementations so production behavior is
   // unchanged; tests override these via setTasks() to exercise the
   // scheduling/safety-gate logic without a real Docker socket.
+  runCertsync: async () => ({ ok: false, message: 'runCertsync not wired' }),
+  listCertsyncRemotes: () => [],
   execNginx,
   restartContainer: (...args) => docker.restartContainer(...args),
 };
 
 function setTasks(overrides) { Object.assign(tasks, overrides); }
 
-let schedCfg  = null;
 let notifCfg  = null;
 
+/** Rétro-compatibilité : l'ancien appel `matchCron(cron, date)`. */
 function matchCron(cron, now) {
-  try {
-    const [min, hour, dom, mon, dow] = cron.split(' ');
-    const match = (pat, val) => {
-      if (pat === '*') return true;
-      if (pat.includes('/')) {
-        const [, step] = pat.split('/');
-        return val % parseInt(step) === 0;
-      }
-      if (pat.includes(',')) return pat.split(',').map(Number).includes(val);
-      if (pat.includes('-')) {
-        const [a, b] = pat.split('-').map(Number);
-        return val >= a && val <= b;
-      }
-      return parseInt(pat) === val;
-    };
-    return match(min, now.getMinutes())
-        && match(hour, now.getHours())
-        && match(dom, now.getDate())
-        && match(mon, now.getMonth() + 1)
-        && match(dow, now.getDay());
-  } catch { return false; }
+  try { return cronMatches(cron, now); } catch { return false; }
 }
 
-async function runScheduledReload() {
-  const cfg = schedCfg?.nginx_reload;
-  if (!cfg?.enable) return;
-  console.log('[scheduler] Running scheduled nginx reload');
-  try {
-    const testResult = await execNginx('nginx -t');
-    if (!testResult.valid && testResult.stderr?.includes('failed')) {
-      console.warn('[scheduler] nginx -t failed — reload aborted');
-      pushNotification({ type: 'scheduled_reload_failed', level: 'error',
-        message: 'Reload nginx planifie annule : nginx -t a echoue',
-        data: { stderr: testResult.stderr || testResult.stdout || '' } });
-      await sendNotification('nginx_reload',
-        '[Nginx Dashboard] Scheduled reload FAILED — config error',
-        `Scheduled nginx reload was aborted because nginx -t failed.\n\nOutput:\n${testResult.stderr || testResult.stdout || ''}`
-      );
-      return;
-    }
-    await execNginx('nginx -s reload');
-    logEvent('scheduler.reload', 'Scheduled nginx reload OK');
-    pushNotification({ type: 'scheduled_reload', level: 'success',
-      message: 'Reload nginx planifie effectue avec succes' });
-    if (cfg.notify) {
-      await sendNotification('nginx_reload',
-        '[Nginx Dashboard] Scheduled nginx reload OK',
-        `Nginx was successfully reloaded at ${new Date().toISOString()}.`
-      );
-    }
-  } catch(e) {
-    console.error('[scheduler] Reload error:', e.message || e);
-    pushNotification({ type: 'scheduled_reload_failed', level: 'error',
-      message: `Erreur lors du reload nginx planifie : ${e.message || e}` });
-    await sendNotification('nginx_reload',
-      '[Nginx Dashboard] Scheduled reload ERROR',
-      `Error during scheduled reload: ${e.message || JSON.stringify(e)}`
-    );
-  }
-}
+// Exécutions en cours, par identifiant de tâche : une tâche lente (sauvegarde,
+// redémarrage avec attente) ne doit jamais se chevaucher elle-même.
+const running = new Map();
 
 /**
- * A full container restart, not just `nginx -s reload` — for the cases a
- * reload cannot fix: a stuck worker, a leaked file descriptor, memory that
- * only a fresh process reclaims. Same nginx -t safety gate as the reload
- * task: restarting on top of a broken config is strictly worse than
- * reloading on top of one, since the container briefly has no nginx running
- * at all rather than just an old config still serving traffic.
+ * Exécute UNE tâche (planifiée ou lancée à la main), enregistre le résultat dans
+ * l'historique et le journal d'événements. Ne lève jamais d'exception.
+ * @returns {{status:'ok'|'error'|'skipped'|'busy', message:string, durationMs?:number}}
  */
-async function runScheduledNginxRestart() {
-  const cfg = schedCfg?.nginx_restart;
-  if (!cfg?.enable) return;
-  console.log('[scheduler] Running scheduled nginx container restart');
+async function runTask(task, { trigger = 'schedule', by = null } = {}) {
+  const type = registry.getType(task.type);
+  if (!type) return { status: 'error', message: `type de tâche inconnu : ${task.type}` };
+  if (running.has(task.id)) return { status: 'busy', message: 'Cette tâche est déjà en cours d\'exécution' };
+  running.set(task.id, Date.now());
+  const startedAt = Date.now();
+  console.log(`[scheduler] Tâche « ${task.name} » (${task.type}) — ${trigger}`);
+  let res;
   try {
-    const testResult = await tasks.execNginx('nginx -t');
-    if (!testResult.valid && testResult.stderr?.includes('failed')) {
-      console.warn('[scheduler] nginx -t failed — restart aborted');
-      pushNotification({ type: 'scheduled_restart_failed', level: 'error',
-        message: 'Redemarrage nginx planifie annule : nginx -t a echoue',
-        data: { stderr: testResult.stderr || testResult.stdout || '' } });
-      await sendNotification('nginx_restart',
-        '[Nginx Dashboard] Scheduled restart FAILED — config error',
-        `Scheduled nginx container restart was aborted because nginx -t failed.\n\nOutput:\n${testResult.stderr || testResult.stdout || ''}`
-      );
-      return;
-    }
-    await tasks.restartContainer(cfg.grace_seconds || 10);
-    logEvent('scheduler.nginx_restart', 'Scheduled nginx container restart OK');
-    pushNotification({ type: 'scheduled_restart', level: 'success',
-      message: 'Redemarrage nginx planifie effectue avec succes' });
-    if (cfg.notify) {
-      await sendNotification('nginx_restart',
-        '[Nginx Dashboard] Scheduled nginx container restart OK',
-        `The nginx container was successfully restarted at ${new Date().toISOString()}.`
-      );
-    }
-  } catch(e) {
-    console.error('[scheduler] Nginx restart error:', e.message || e);
-    pushNotification({ type: 'scheduled_restart_failed', level: 'error',
-      message: `Erreur lors du redemarrage nginx planifie : ${e.message || e}` });
-    await sendNotification('nginx_restart',
-      '[Nginx Dashboard] Scheduled nginx restart ERROR',
-      `Error during scheduled nginx container restart: ${e.message || JSON.stringify(e)}`
-    );
+    res = await type.run(task.params || {}, { tasks, task });
+    if (!res || !['ok', 'error', 'skipped'].includes(res.status)) res = { status: 'ok', message: (res && res.message) || '' };
+  } catch (e) {
+    const msg = (e && (e.message || e.error)) || String(e);
+    console.error(`[scheduler] Tâche « ${task.name} » en erreur :`, msg);
+    pushNotification({ type: 'scheduled_task_failed', level: 'error', message: `Tâche planifiée « ${task.name} » en échec : ${msg}` });
+    res = { status: 'error', message: msg };
+  } finally {
+    running.delete(task.id);
   }
+  const durationMs = Date.now() - startedAt;
+  try { store.recordRun(task.id, { startedAt, durationMs, status: res.status, message: res.message, trigger, by }); }
+  catch (e) { console.warn('[scheduler] historique non enregistré :', e.message); }
+  logEvent('scheduler.task', { id: task.id, name: task.name, type: task.type, status: res.status, trigger, by, durationMs }, 'scheduler');
+  return { ...res, durationMs };
 }
 
-async function runScheduledGoAccessRestart() {
-  const cfg = schedCfg?.goaccess_restart;
-  if (!cfg?.enable) return;
-  // Fix (audit report, Basse/"Partie 1 et certificats", confirmed "✔"):
-  // these three calls used the bare identifiers `listGoAccessSources`,
-  // `getGoAccessContainerStatus`, `restartGoAccessContainer` — which don't
-  // exist anywhere in this module's own scope. The real implementations are
-  // only ever available through the injected `tasks` object just above
-  // (this module's header explains why: features are injected here, never
-  // imported directly). Every real run of this function threw a
-  // ReferenceError on the very first line below, meaning the scheduled
-  // GoAccess restart has never actually restarted anything since it shipped
-  // — the feature looked wired up (config, UI, a scheduler tick that fires
-  // on time) but silently failed on every single run.
-  const sources = tasks.listGoAccessSources();
-  const targets = cfg.sources && cfg.sources.length
-    ? sources.filter(s => cfg.sources.includes(s.id))
-    : sources;
-  console.log(`[scheduler] GoAccess restart: ${targets.length} container(s)`);
-  for (const src of targets) {
-    try {
-      const status = await tasks.getGoAccessContainerStatus(src.id);
-      if (!status.running) continue;
-      await tasks.restartGoAccessContainer(src.id);
-      console.log(`[scheduler] GoAccess restarted: ${src.id}`);
-      logEvent('scheduler.goaccess_restart', `GoAccess restarted: ${src.id}`);
-    } catch(e) {
-      console.error(`[scheduler] GoAccess restart error (${src.id}):`, e.message);
-    }
+/** Lance une tâche à la demande (bouton « Exécuter maintenant »). */
+async function runTaskNow(id, by) {
+  const task = store.getTask(id);
+  if (!task) return { status: 'error', message: 'tâche introuvable', notFound: true };
+  return runTask(task, { trigger: 'manual', by });
+}
+
+function isRunning(id) { return running.has(Number(id)); }
+
+/** Listes dynamiques du formulaire (ex. conteneurs GoAccess) : { value, label }[]. */
+function resolveOptions(name) {
+  if (name === 'goaccess_sources') {
+    return (tasks.listGoAccessSources() || []).map(src => ({ value: src.id, label: src.name || src.id }));
   }
+  if (name === 'certsync_remotes') return tasks.listCertsyncRemotes() || [];
+  return [];
 }
 
 /**
@@ -241,74 +174,6 @@ async function runScheduledAgentSslRecheck() {
     } catch(e) {
       console.error(`[scheduler] Agent SSL recheck error (${agentId}):`, e.message);
     }
-  }
-}
-
-async function runScheduledBackup() {
-  const cfg = schedCfg?.backup;
-  if (!cfg?.enable) return;
-  console.log('[scheduler] Running scheduled backup');
-  try {
-    const mode    = cfg.mode || 'local';
-    const doLocal = mode === 'local' || mode === 'both';
-    const doGit   = (mode === 'git'   || mode === 'both') && !!GIT_REPO_URL;
-    let zipResult = null;
-    let gitResult = null;
-    if (doLocal) zipResult = await tasks.createBackupZip('scheduled').catch(e => ({ error: e.message }));
-    if (doGit)   gitResult = await tasks.gitBackupPush('scheduled').catch(e => ({ error: e.message }));
-    const failed = (zipResult?.error) || (doGit && gitResult?.error);
-    logEvent('scheduler.backup', { mode, zip: zipResult?.zipName, git: gitResult?.tag, failed });
-    if (failed && cfg.notify_on_failure) {
-      await sendNotification('backup_failure',
-        '[Nginx Dashboard] Scheduled backup FAILED',
-        `Backup failed.\nMode: ${mode}\nZIP: ${zipResult?.error || zipResult?.zipName || 'skipped'}\nGit: ${gitResult?.error || gitResult?.tag || 'skipped'}`
-      );
-    }
-  } catch(e) {
-    console.error('[scheduler] Backup error:', e.message);
-    if (schedCfg?.backup?.notify_on_failure) {
-      await sendNotification('backup_failure',
-        '[Nginx Dashboard] Scheduled backup ERROR',
-        `Error during scheduled backup: ${e.message}`
-      );
-    }
-  }
-}
-
-/**
- * A periodic operational summary, composed by lib/digest.js from data this
- * project already computes elsewhere (traffic, bot/human split, CrowdSec,
- * WAF, certificate expiry). Saved to the events database so the dashboard
- * can show it and its history, and mailed when configured to — the same
- * two-destination pattern requested for this feature: visible in the UI,
- * and delivered without anyone needing to remember to go look.
- *
- * A daily vs. weekly cadence is just a matter of which cron the operator
- * writes in scheduler.yml (e.g. "0 7 * * *" for daily at 7am, "0 7 * * 1"
- * for weekly on Monday at 7am) — the same single `cron` field every other
- * scheduled task in this file already uses, rather than a separate
- * "frequency" concept invented just for this one.
- */
-async function runScheduledDigest() {
-  const cfgDigest = schedCfg?.digest;
-  if (!cfgDigest?.enable) return;
-  console.log('[scheduler] Generating scheduled digest');
-  try {
-    const periodHours = cfgDigest.period_hours || 24;
-    const d = await digest.generateDigest(periodHours);
-    const id = events.saveDigest(d);
-    logEvent('scheduler.digest', `Scheduled digest generated${id ? ` (#${id})` : ''}`);
-    if (cfgDigest.notify) {
-      const recipients = Array.isArray(cfgDigest.recipients) ? cfgDigest.recipients : [];
-      if (recipients.length) {
-        await sendMail(recipients,
-          `[Nginx Dashboard] Résumé périodique — ${new Date(d.generatedAt).toLocaleDateString('fr-FR')}`,
-          digest.formatDigestText(d)
-        ).catch(e => console.warn('[scheduler] Digest mail error:', e.message));
-      }
-    }
-  } catch (e) {
-    console.error('[scheduler] Digest generation error:', e.message || e);
   }
 }
 
@@ -377,98 +242,58 @@ function startScheduler() {
   loadSmtpConfig();
   // BUG REEL (signale par un utilisateur : "certificat qui expire dans 22
   // jours, aucune notification, y a-t-il un scheduler interne ?") : la
-  // valeur de retour de loadNotifConfig() etait ignoree ici, exactement le
-  // meme bug que celui deja identifie et corrige pour schedCfg (voir le
-  // commentaire plus bas, "Reload configs each minute") — sauf que le
-  // correctif n avait alors ete applique qu a schedCfg, pas a notifCfg.
-  // Consequence : `notifCfg` restait a `null` pour toujours, si bien que
-  // checkCertExpiry() faisait systematiquement `if (!cfg?.enable) return;`
-  // des sa premiere ligne et ne verifiait STRICTEMENT AUCUN certificat,
-  // meme avec `cert_expiry: enable: true` dans notifications.yml. Silencieux
-  // : aucune exception, aucun log — le planificateur tournait, juste sans
-  // jamais rien vérifier.
+  // valeur de retour de loadNotifConfig() etait ignoree, si bien que
+  // `notifCfg` restait a `null` pour toujours et checkCertExpiry() ne
+  // verifiait strictement aucun certificat. La valeur de retour est donc
+  // toujours recuperee, au demarrage comme a chaque minute.
   notifCfg = loadNotifConfig();
-  schedCfg = loadSchedConfig();
+
+  // Import unique de l'ancien scheduler.yml dans la base (sans effet si deja fait
+  // ou si la base n'est pas disponible).
+  try { store.migrateLegacyYaml(loadSchedConfig()); }
+  catch (e) { console.warn('[scheduler] import de scheduler.yml impossible :', e.message); }
   console.log('[scheduler] Started');
 
-  // Persists across ticks via closure, not module scope: the interval never
-  // gets recreated for the life of the process, so a local variable here
-  // survives exactly as long as it needs to. It was previously read without
-  // ever being declared — under strict mode that throws a ReferenceError on
-  // every single tick, meaning no scheduled task (cert expiry, backups) had
-  // ever actually run. The crash used to be fatal and obvious; since the
-  // global unhandledRejection safety net was added, it degraded into a
-  // silent, repeating failure instead — same bug, much quieter symptom.
+  // Persiste d'un tick a l'autre par fermeture (pas portee module) : l'intervalle
+  // n'est jamais recree pendant la vie du processus. Cle = minute ecoulee depuis
+  // l'epoch, pas seulement getMinutes() : deux ticks de la meme minute civile
+  // n'executent jamais deux fois les memes taches.
   let lastSchedulerMinute = null;
 
   setInterval(async () => {
     const now = new Date();
-    if (now.getMinutes() === lastSchedulerMinute) return;
-    lastSchedulerMinute = now.getMinutes();
+    const minuteKey = Math.floor(now.getTime() / 60000);
+    if (minuteKey === lastSchedulerMinute) return;
+    lastSchedulerMinute = minuteKey;
 
-    // Reload configs each minute (picks up changes without restart).
-    // loadSchedConfig() (from lib/notify.js) updates ITS OWN internal
-    // module-level variable and returns the parsed config — this file has a
-    // SEPARATE `schedCfg` declared above, which every scheduled-task check
-    // below reads. The return value was previously discarded here, leaving
-    // this file's `schedCfg` at its initial `null` forever: every
-    // `schedCfg?.xxx` below silently evaluated to `undefined` regardless of
-    // what scheduler.yml actually contained. No exception, no log line —
-    // reload, backup, GoAccess restart and this file's own scheduled tasks
-    // had never actually been able to fire. Confirmed directly: with
-    // `enable: true` and a cron that always matches, the task still never
-    // ran until this line captured the return value.
     loadSmtpConfig();
-    notifCfg = loadNotifConfig(); // meme correctif qu au demarrage ci-dessus — voir le commentaire la-bas
-    schedCfg = loadSchedConfig();
+    notifCfg = loadNotifConfig();
 
-    // Cert expiry check — once per day, at 03:00. Le commentaire disait deja
-    // "once per day" mais la condition ne testait QUE les minutes, donc la
-    // verification tournait en realite toutes les heures (24x/jour) —
-    // inoffensif pour l email (deja idempotent par nature, un email de plus
-    // ne casse rien) mais aurait fait spammer le centre de notification a
-    // chaque tick sans le garde-fou pushCertNotificationOnce() (dedup
-    // quotidien, voir plus haut dans ce fichier).
+    // Verification d'expiration des certificats : une fois par jour, a 03:00
+    // (dedup quotidien supplementaire dans pushCertNotificationOnce()).
     if (now.getHours() === 3 && now.getMinutes() === 0) {
       checkCertExpiry().catch(e => console.error('[scheduler] certExpiry error:', e.message));
     }
 
-    // Scheduled reload
-    const reloadCron = schedCfg?.nginx_reload?.cron;
-    if (reloadCron && schedCfg?.nginx_reload?.enable && matchCron(reloadCron, now)) {
-      runScheduledReload().catch(e => console.error('[scheduler] reload error:', e.message));
+    // Taches planifiees (base) : relues a chaque minute, tire-et-oublie pour
+    // qu'une tache lente ne retarde pas les autres.
+    let tasksList = [];
+    try { tasksList = store.listTasks(); }
+    catch (e) { /* base indisponible : on ne declenche rien plutot que de planter */ }
+    for (const task of tasksList) {
+      if (!task.enabled || !cronMatches(task.cron, now)) continue;
+      runTask(task, { trigger: 'schedule' }).catch(e => console.error('[scheduler] task error:', e.message));
     }
 
-    // Scheduled full container restart — distinct from reload above
-    const restartCron = schedCfg?.nginx_restart?.cron;
-    if (restartCron && schedCfg?.nginx_restart?.enable && matchCron(restartCron, now)) {
-      runScheduledNginxRestart().catch(e => console.error('[scheduler] nginx restart error:', e.message));
-    }
-
-    // Scheduled digest
-    const digestCron = schedCfg?.digest?.cron;
-    if (digestCron && schedCfg?.digest?.enable && matchCron(digestCron, now)) {
-      runScheduledDigest().catch(e => console.error('[scheduler] digest error:', e.message));
-    }
-
-    // Scheduled backup
-    const backupCron = schedCfg?.backup?.cron;
-    if (backupCron && schedCfg?.backup?.enable && matchCron(backupCron, now)) {
-      runScheduledBackup().catch(e => console.error('[scheduler] backup error:', e.message));
-    }
-
-    // Scheduled GoAccess restart
-    const gaCron = schedCfg?.goaccess_restart?.cron;
-    if (gaCron && schedCfg?.goaccess_restart?.enable && matchCron(gaCron, now)) {
-      runScheduledGoAccessRestart().catch(e => console.error('[scheduler] goaccess restart error:', e.message));
-    }
-
-    // Agent SSL recheck — every 5 minutes, unconditional (see
-    // runScheduledAgentSslRecheck()'s own header comment for why this one
-    // isn't gated by a scheduler.yml toggle like the tasks above).
+    // Recheck SSL des agents distants — toutes les 5 minutes, sans condition
+    // (voir runScheduledAgentSslRecheck() : correctif de coherence, pas une
+    // option a activer).
     if (now.getMinutes() % 5 === 0) {
       runScheduledAgentSslRecheck().catch(e => console.error('[scheduler] agent SSL recheck error:', e.message));
     }
-  }, 30000); // check every 30s
+  }, 30000); // verification toutes les 30 s
 }
-module.exports = { matchCron, startScheduler, setTasks, checkCertExpiry, runScheduledNginxRestart, runScheduledDigest, runScheduledGoAccessRestart, runScheduledAgentSslRecheck };
+module.exports = {
+  matchCron, startScheduler, setTasks, checkCertExpiry, runScheduledAgentSslRecheck,
+  runTask, runTaskNow, isRunning, resolveOptions,
+};

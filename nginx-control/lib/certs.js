@@ -147,6 +147,19 @@ function scanCertsDir(certsDir) {
     }).filter(Boolean);
 }
 
+/** Certificats installés par la synchro (v12.59.0) : `<DIR_CERTS>/synced/<nom>/fullchain.pem`. */
+function scanSyncedDir(certsDir) {
+  const base = path.join(certsDir, 'synced');
+  return safeReadDir(base).filter(d => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(d)).map(domain => {
+    const certFile = path.join(base, domain, 'fullchain.pem');
+    const stat = safeStat(certFile);
+    if (!stat) return null;
+    const pem = safeReadFile(certFile);
+    if (!pem) return null;
+    return { name: `synced/${domain}/fullchain.pem`, domain, path: certFile, size: stat.size, mtime: stat.mtime.toISOString(), source: 'synced', ...parseCert(pem) };
+  }).filter(Boolean);
+}
+
 function scanSslDir(dir) {
   return safeReadDir(dir)
     .filter(name => CERT_EXTS.has(path.extname(name).toLowerCase()))
@@ -161,7 +174,7 @@ function scanSslDir(dir) {
 }
 
 function getAllCertificates() {
-  const all     = [...scanSslDir(DIR_SSL), ...scanCertsDir(DIR_CERTS)];
+  const all     = [...scanSslDir(DIR_SSL), ...scanCertsDir(DIR_CERTS), ...scanSyncedDir(DIR_CERTS)];
   const summary = { total: all.length, expired: all.filter(c => c.expired).length, warning: all.filter(c => c.warning && !c.expired).length, ok: all.filter(c => !c.expired && !c.warning).length };
   return { certificates: all, summary };
 }
@@ -240,6 +253,6 @@ function checkDomainConflict(domain, opts = {}) {
 }
 module.exports = {
   parseCert, parseCertSANs, adaptiveThreshold,
-  scanSslDir, scanCertsDir, getAllCertificates,
+  scanSslDir, scanCertsDir, scanSyncedDir, getAllCertificates,
   listExistingCerts, checkDomainConflict,
 };

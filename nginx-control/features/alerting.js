@@ -53,7 +53,7 @@ function fetchAlertingFile(fileUrl, depth = 5) {
     let u;
     try { u = new URL(fileUrl); } catch { return resolve({ error: 'URL invalide' }); }
     const proto = u.protocol === 'http:' ? http : https;
-    const req = proto.request(u, { method: 'GET', headers: { 'User-Agent': 'nginx-dashboard' }, timeout: 8000 }, (res) => {
+    const req = proto.request(u, { method: 'GET', headers: { 'User-Agent': cfg.HTTP_USER_AGENT }, timeout: 8000 }, (res) => {
       if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
         res.resume();
         let next;

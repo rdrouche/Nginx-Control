@@ -84,7 +84,51 @@ function get(p) {
     assert.ok(/javascript/.test(notifySchedJs.headers['content-type']));
     assert.ok(notifySchedJs.body.includes('function notifySave'));
     assert.ok(notifySchedJs.body.includes('function schedSave'));
-    assert.ok(notifySchedJs.body.includes('function initScheduler'));
+    assert.ok(notifySchedJs.body.includes('function schedLoadNotif'));
+  });
+
+  const notifyFormJs = await get('/assets/js/notify-form.js');
+  check('js/notify-form.js -> 200, Content-Type JS, contient les formulaires SMTP/alertes', () => {
+    assert.strictEqual(notifyFormJs.status, 200);
+    assert.ok(/javascript/.test(notifyFormJs.headers['content-type']));
+    assert.ok(notifyFormJs.body.includes('function nfSaveSmtp'));
+    assert.ok(notifyFormJs.body.includes('function nfSaveRules'));
+    assert.ok(notifyFormJs.body.includes('function notifyTestSmtp'));
+  });
+
+  const schedJs = await get('/assets/js/scheduler.js');
+  check('js/scheduler.js -> 200, Content-Type JS, contient le formulaire de taches', () => {
+    assert.strictEqual(schedJs.status, 200);
+    assert.ok(/javascript/.test(schedJs.headers['content-type']));
+    assert.ok(schedJs.body.includes('function initScheduler'));
+    assert.ok(schedJs.body.includes('function schedSaveTask'));
+    assert.ok(schedJs.body.includes('function schedImportFile'));
+  });
+
+  const csJs = await get('/assets/js/certsync.js');
+  check('js/certsync.js -> 200, Content-Type JS, contient la synchro de certificats', () => {
+    assert.strictEqual(csJs.status, 200);
+    assert.ok(/javascript/.test(csJs.headers['content-type']));
+    assert.ok(csJs.body.includes('function csLoad'));
+    assert.ok(csJs.body.includes('function csRemoteSave'));
+    assert.ok(csJs.body.includes('function csTokenCreate'));
+  });
+
+  const rbJs = await get('/assets/js/rules-builder.js');
+  check('js/rules-builder.js -> 200, Content-Type JS, contient le formulaire de regles', () => {
+    assert.strictEqual(rbJs.status, 200);
+    assert.ok(/javascript/.test(rbJs.headers['content-type']));
+    assert.ok(rbJs.body.includes('function rbSetData'));
+    assert.ok(rbJs.body.includes('function rbSave'));
+    assert.ok(rbJs.body.includes('function rulesTab'));
+  });
+
+  const campJs = await get('/assets/js/analyzer-campaign.js');
+  check('js/analyzer-campaign.js -> 200, Content-Type JS, contient le panneau de campagne', () => {
+    assert.strictEqual(campJs.status, 200);
+    assert.ok(/javascript/.test(campJs.headers['content-type']));
+    assert.ok(campJs.body.includes('function anCampaignPanel'));
+    assert.ok(campJs.body.includes('function anCampaignRaw'));
   });
 
   const analyzerJs = await get('/assets/js/analyzer.js');
@@ -165,6 +209,39 @@ function get(p) {
     assert.ok(errorPagesJs.body.includes('function errorPagesLoad'));
     assert.ok(errorPagesJs.body.includes('function errorPagesRefreshStatus'));
     assert.ok(errorPagesJs.body.includes('function errorPagesImageUpdate'));
+  });
+
+  const challengeJs = await get('/assets/js/challenge.js');
+  check('js/challenge.js -> 200, Content-Type JS, contient bien ses fonctions', () => {
+    assert.strictEqual(challengeJs.status, 200);
+    assert.ok(/javascript/.test(challengeJs.headers['content-type']));
+    assert.ok(challengeJs.body.includes('function challengeLoad'));
+    assert.ok(challengeJs.body.includes('function challengeStart'));
+    assert.ok(challengeJs.body.includes('function challengeApply'));
+    assert.ok(challengeJs.body.includes('function challengeImageUpdate'));
+  });
+
+  const ctJs = await get('/assets/js/containers.js');
+  check('js/containers.js -> 200, contient ses fonctions', () => {
+    assert.strictEqual(ctJs.status, 200);
+    assert.ok(/javascript/.test(ctJs.headers['content-type']));
+    assert.ok(ctJs.body.includes('function containersLoad'));
+    assert.ok(ctJs.body.includes('function ctLogsOpen'));
+  });
+
+  const bvJs = await get('/assets/js/baseline-view.js');
+  check('js/baseline-view.js -> 200, contient ses fonctions', () => {
+    assert.strictEqual(bvJs.status, 200);
+    assert.ok(bvJs.body.includes('function baselineViewOpen'));
+    assert.ok(bvJs.body.includes('function baselineViewProfile'));
+  });
+
+  const gsJs = await get('/assets/js/global-search.js');
+  check('js/global-search.js -> 200, Content-Type JS, contient bien ses fonctions', () => {
+    assert.strictEqual(gsJs.status, 200);
+    assert.ok(/javascript/.test(gsJs.headers['content-type']));
+    assert.ok(gsJs.body.includes('function gsSearch'));
+    assert.ok(gsJs.body.includes('function gsGo'));
   });
 
   const blocklistsJs = await get('/assets/js/blocklists.js');

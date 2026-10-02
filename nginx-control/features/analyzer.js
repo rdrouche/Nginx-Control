@@ -143,6 +143,8 @@ async function startAnalyzer(c) {
     `BF_MIN_FAILURES=${c.bruteforce_min_failures ?? 15}`,
     `SCAN_MIN_REQUESTS=${c.scan_min_requests ?? 40}`,
     `FLOOD_MIN_REQUESTS=${c.flood_min_requests ?? 600}`,
+    // Codes HTTP ignores par la detection (ex. 444 : deja bloque ailleurs) — vide = aucun.
+    `DETECT_IGNORE_STATUS=${String(c.ignore_status ?? '').replace(/[^0-9,; ]/g, '')}`,
     `ALERT_RETENTION_DAYS=${c.alert_retention_days ?? 90}`,
     `WAF_LOG_PATTERN=${c.waf_log_pattern || '\\.waf\\.log$'}`,
     `WAF_RETENTION_DAYS=${c.waf_retention_days ?? 60}`,
@@ -184,6 +186,45 @@ async function stopAnalyzer(c) {
 }
 
 /**
+ * Redemarre le conteneur analyzer (tache planifiee « Redemarrer l'analyzer »,
+ * et utilisable a la demande) puis attend que son API reponde de nouveau.
+ *
+ * Un `docker restart` conserve le conteneur, son image et ses montages : la
+ * base d'historique et la baseline survivent (ils sont sur le volume
+ * host_data_path), contrairement a startAnalyzer() qui recree le conteneur.
+ * L'attente de /api/health est volontairement incluse : l'API n'est pas
+ * joignable tout de suite apres un redemarrage (chargement de la base,
+ * relecture des journaux) et un redemarrage « reussi » dont l'API ne revient
+ * jamais doit etre signale comme un echec, pas comme un succes.
+ *
+ * @returns {{ok:boolean, skipped?:boolean, message:string, healthy?:boolean, waitedMs?:number}}
+ *          leve une exception quand Docker est injoignable ou le conteneur absent.
+ */
+async function restartAnalyzer({ graceSeconds = 10, waitHealthy = true, healthTimeoutMs = 90_000, pollMs = 2_000 } = {}) {
+  const c = getAnalyzerCfg();
+  if (!c?.enable) return { ok: false, skipped: true, message: "L'analyzer est desactive (analyzer.yml : enable: false)" };
+  const st = await analyzerStatus();
+  if (st.dockerUnavailable) throw new Error(`Docker injoignable : ${st.error || 'socket indisponible'}`);
+  if (!st.exists) throw new Error(`Conteneur « ${st.name} » absent : demarrez-le depuis la page Analyse`);
+  const grace = Math.max(1, Math.min(120, Math.floor(Number(graceSeconds)) || 10));
+  const r = await dockerCall('POST', `/containers/${encodeURIComponent(st.name)}/restart?t=${grace}`);
+  if (r.status !== 204 && r.status !== 304) throw new Error(`Redemarrage refuse par Docker : HTTP ${r.status}`);
+  if (!waitHealthy) return { ok: true, healthy: null, message: `Conteneur « ${st.name} » redemarre` };
+
+  const t0 = Date.now();
+  while (Date.now() - t0 < healthTimeoutMs) {
+    await new Promise(res => setTimeout(res, pollMs));
+    const h = await analyzerApi('/api/health');
+    if (h && h.status === 200) {
+      const waitedMs = Date.now() - t0;
+      return { ok: true, healthy: true, waitedMs, message: `Conteneur « ${st.name} » redemarre, API de nouveau joignable apres ${(waitedMs / 1000).toFixed(1)} s` };
+    }
+  }
+  return { ok: false, healthy: false, waitedMs: Date.now() - t0,
+    message: `Conteneur « ${st.name} » redemarre mais l'API ne repond toujours pas apres ${Math.round(healthTimeoutMs / 1000)} s (voir les logs du conteneur)` };
+}
+
+/**
  * Same reasoning as certbot's/geoipupdate's/error-pages' own
  * ensure*AtBoot(): `RestartPolicy: unless-stopped` only ever restarts a
  * container Docker already knows about — it does nothing the very first
@@ -221,7 +262,7 @@ function analyzerApi(pathAndQuery, method = 'GET') {
     const req = http.request({
       hostname: containerName(c), port: analyzerPort(c),
       path: pathAndQuery, method, timeout: 8000,
-      headers: { 'X-Analyzer-Token': getAnalyzerToken() },
+      headers: { 'X-Analyzer-Token': getAnalyzerToken(), 'User-Agent': cfg.HTTP_USER_AGENT },
     }, res => {
       let body = '';
       res.on('data', d => body += d);
@@ -245,7 +286,7 @@ function analyzerApiJson(pathAndQuery, method, bodyObj) {
       hostname: containerName(c), port: analyzerPort(c),
       path: pathAndQuery, method, timeout: 8000,
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
-                 'X-Analyzer-Token': getAnalyzerToken() },
+                 'X-Analyzer-Token': getAnalyzerToken(), 'User-Agent': cfg.HTTP_USER_AGENT },
     }, res => {
       let out = '';
       res.on('data', d => out += d);
@@ -286,6 +327,31 @@ async function pushVhostRules() {
   // and `ignore` is unioned (a rule id ignored by either block is ignored
   // for the vhost as a whole) — order of the blocks in the file no longer
   // matters.
+  const vhosts = buildVhostRulesMap();
+  await analyzerApiJson('/api/vhost-rules', 'POST', { vhosts });
+}
+
+/** Union par regle de deux maps { [ruleId]: string[] } de motifs paths-ignore. */
+function mergePathsIgnore(a, b) {
+  const out = {};
+  for (const src of [a || {}, b || {}]) {
+    for (const [id, list] of Object.entries(src)) {
+      out[id] = [...new Set([...(out[id] || []), ...list])];
+    }
+  }
+  return out;
+}
+
+/**
+ * Recompute the { enabled, ignore, noRemediation } map straight from the
+ * vhost files, without pushing it anywhere — extracted out of pushVhostRules()
+ * so features/blocklists.js's own "Blocklist a la CrowdSec" computation
+ * (v12.50.0) can read the `noRemediation` opt-out (# nginx-control-analyze-
+ * no-remediation: on) directly, the same source of truth, without a round
+ * trip through the analyzer (which never needs this field itself: it only
+ * affects the dashboard's own blocking decision, never detection/alerting).
+ */
+function buildVhostRulesMap() {
   const vhosts = {};
   for (const v of listVhostTargets({ sitesDir: DIR_SITES, upstreamDirs: UPSTREAM_DIRS })) {
     for (const block of v.serverBlocks || []) {
@@ -293,14 +359,29 @@ async function pushVhostRules() {
         if (name === '_' || !name) continue;
         const enabled = block.analyzeEnabled !== false;
         const ignore = block.analyzeIgnoreRuleIds || [];
+        const noRemediation = !!block.analyzeNoRemediation;
+        const pathsIgnore = block.analyzePathsIgnore || {};
         const prev = vhosts[name];
-        vhosts[name] = prev
-          ? { enabled: prev.enabled && enabled, ignore: [...new Set([...prev.ignore, ...ignore])] }
-          : { enabled, ignore: [...ignore] };
+        const entry = prev
+          ? {
+              enabled: prev.enabled && enabled,
+              ignore: [...new Set([...prev.ignore, ...ignore])],
+              // OR/union, meme semantique que `ignore` ci-dessus : un seul
+              // bloc partageant ce nom de vhost suffit a exempter le nom
+              // entier de la remediation automatique.
+              noRemediation: prev.noRemediation || noRemediation,
+              // Union par regle, comme `ignore` : un motif declare dans l un des
+              // blocs partageant ce nom de vhost s applique au vhost entier.
+              pathsIgnore: mergePathsIgnore(prev.pathsIgnore, pathsIgnore),
+            }
+          : { enabled, ignore: [...ignore], noRemediation, pathsIgnore: mergePathsIgnore({}, pathsIgnore) };
+        // Charge utile inchangee tant qu aucun motif n est declare.
+        if (!Object.keys(entry.pathsIgnore).length) delete entry.pathsIgnore;
+        vhosts[name] = entry;
       }
     }
   }
-  await analyzerApiJson('/api/vhost-rules', 'POST', { vhosts });
+  return vhosts;
 }
 
 // ─── Alert forwarding ────────────────────────────────────────────────────────
@@ -595,6 +676,29 @@ function register(router) {
     return send(res, r?.status || 200, r?.data || { ok: false });
   });
 
+  /**
+   * "Blocklist a la CrowdSec" par regle (v12.50.0) : threshold/fenetre/
+   * remediation/duree de remediation d UNE regle integree — voir
+   * nginx-analyzer/lib/rules-manager.js#setBlocklistConfig(). Une regle
+   * personnalisee (id >= 100) porte deja ses propres champs blocklist_* dans
+   * son YAML (voir /api/analyzer/rules/custom ci-dessous), donc aucune route
+   * dediee n est necessaire pour elle.
+   */
+  router.post('/api/analyzer/rules/blocklist', async ({ req, res, session }) => {
+    if (!hasPerm(session, PERMS.DEPLOY)) return httpLib.forbidden(res);
+    const key = new URL(req.url, 'http://localhost').searchParams.get('key');
+    if (!key) return httpLib.badRequest(res, 'key required');
+    const body = await parseBody(req);
+    const r = await analyzerApiJson(`/api/rules/blocklist?key=${encodeURIComponent(key)}`, 'POST', {
+      threshold: body.threshold, windowMinutes: body.windowMinutes,
+      remediation: body.remediation === true, remediationMinutes: body.remediationMinutes,
+      remediationType: body.remediationType,
+    });
+    if (!r) return send(res, 200, { ok: false, errors: ['Analyzer injoignable'] });
+    if (r.data?.ok) logEvent('analyzer.rule_blocklist_config', { key, ...body, by: session.username });
+    return send(res, r.status, r.data || { ok: false, errors: ['Reponse invalide'] });
+  });
+
   /** Raw YAML of the custom rules, for the editor's textarea. */
   router.get('/api/analyzer/rules/custom', async ({ res, session }) => {
     if (!hasPerm(session, PERMS.VIEW_CONFIGS)) return httpLib.forbidden(res);
@@ -616,6 +720,25 @@ function register(router) {
   router.get('/api/analyzer/baseline', async ({ res, session }) => {
     if (!hasPerm(session, PERMS.VIEW_METRICS)) return httpLib.forbidden(res);
     const r = await analyzerApi('/api/baseline');
+    if (!r) return send(res, 200, { reachable: false });
+    return send(res, 200, { reachable: true, ...r.data });
+  });
+
+  // v12.68.0 : ce que la baseline a appris — resume par cle, puis profil des 168 creneaux.
+  router.get('/api/analyzer/baseline/keys', async ({ res, session, url }) => {
+    if (!hasPerm(session, PERMS.VIEW_METRICS)) return httpLib.forbidden(res);
+    const type = url.searchParams.get('type') === 'country' ? 'country' : 'vhost';
+    const r = await analyzerApi(`/api/baseline/keys?type=${type}`);
+    if (!r) return send(res, 200, { reachable: false, keys: [] });
+    return send(res, 200, { reachable: true, ...r.data });
+  });
+
+  router.get('/api/analyzer/baseline/profile', async ({ res, session, url }) => {
+    if (!hasPerm(session, PERMS.VIEW_METRICS)) return httpLib.forbidden(res);
+    const type = url.searchParams.get('type') === 'country' ? 'country' : 'vhost';
+    const key = String(url.searchParams.get('key') || '');
+    if (!key || key.length > 253) return httpLib.badRequest(res, 'key required');
+    const r = await analyzerApi(`/api/baseline/profile?type=${type}&key=${encodeURIComponent(key)}`);
     if (!r) return send(res, 200, { reachable: false });
     return send(res, 200, { reachable: true, ...r.data });
   });
@@ -688,7 +811,7 @@ function register(router) {
 }
 
 module.exports = {
-  register, startAlertPolling, pollAlerts, pushVhostRules,
+  register, startAlertPolling, pollAlerts, pushVhostRules, buildVhostRulesMap,
   getAnalyzerCfg, loadAnalyzerConfig, analyzerStatus, analyzerApi, analyzerApiJson,
-  startAnalyzer, stopAnalyzer, ensureContainerAtBoot,
+  startAnalyzer, stopAnalyzer, restartAnalyzer, ensureContainerAtBoot,
 };

@@ -595,8 +595,18 @@ check('le bouton "Regles" ouvre la modale, elle-meme presente avec ses zones', (
   assert.ok(/onclick="rulesOpen\(\)"/.test(html));
   assert.ok(/id="rules-modal-overlay"/.test(html));
   assert.ok(/id="rules-builtin-list"/.test(html));
-  assert.ok(/id="rules-custom-list"/.test(html));
-  assert.ok(/id="rules-custom-yaml"/.test(html));
+  assert.ok(/id="rb-list"/.test(html));          // onglet « Mes regles » (formulaire, v12.61.0)
+  assert.ok(/id="rb-tpl-list"/.test(html));      // onglet « Modeles »
+  assert.ok(/id="rules-custom-yaml"/.test(html)); // onglet « Mode avance (YAML) »
+  for (const tab of ['builtin', 'mine', 'templates', 'yaml']) assert.ok(new RegExp('id="rb-tab-' + tab + '"').test(html), tab);
+});
+check('formulaire de regles : toute valeur issue des regles passe par h() (pas d\'injection HTML)', () => {
+  const rb = fs.readFileSync(path.join(__dirname, '..', 'public', 'assets', 'js', 'rules-builder.js'), 'utf8');
+  // Les seules concatenations brutes dans du HTML sont des identifiants numeriques (_uid) ou des fonctions deja echappees.
+  assert.ok(/h\(r\.name \|\| rbT\('rb\.unnamed'\)\)/.test(rb));
+  assert.ok(/h\(rbSummary\(r\)\)/.test(rb));
+  assert.ok(/value="' \+ h\(value == null/.test(rb));
+  assert.ok(!/\+\s*r\.(name|description|pathHint|uaHint)\s*[+;]/.test(rb), 'concatenation brute de r.name/description/hints');
 });
 check('rulesOpen()/rulesClose()/rulesLoad()/rulesToggle()/rulesSaveCustom() sont bien definies', () => {
   assert.ok(/function rulesOpen\(\)/.test(scripts));

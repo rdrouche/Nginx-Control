@@ -53,7 +53,7 @@ const { getCrowdsecCfg } = require('./crowdsec-cfg');
 // rejected on /v1/watchers/login. Node's http/https client sends none by
 // default unless one is set explicitly, which this module previously never
 // did.
-const USER_AGENT = `nginx-dashboard/${cfg.VERSION}`;
+const USER_AGENT = cfg.HTTP_USER_AGENT;
 
 function machineConfigured() {
   const c = getCrowdsecCfg();

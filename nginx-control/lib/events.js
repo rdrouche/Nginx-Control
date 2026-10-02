@@ -223,6 +223,9 @@ function setState(key, value) {
   } catch (e) { console.warn('[events] setState:', e.message); }
 }
 
+/** Poignee SQLite partagee (null si indisponible) : lib/blocklist-history.js y ajoute sa propre table. */
+function getDb() { return eventsDb; }
+
 function clearEvents() {
   eventLog.length = 0;
   if (eventsDb) { try { eventsDb.exec('DELETE FROM events'); } catch { /* ignore */ } }
@@ -247,6 +250,7 @@ function fireWebhook(wh, payload) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'User-Agent': cfg.HTTP_USER_AGENT,
         'Content-Length': Buffer.byteLength(body),
         // v12.32.0: getWebhookSecret() also returns a value generated from
         // the UI (page Systeme) when WEBHOOK_SECRET is not set in .env —
@@ -291,6 +295,6 @@ function recentEvents(limit = MAX_LOG, offset = 0) {
 module.exports = {
   MAX_LOG, eventLog, webhooks,
   initEventsDb, purgeOldEvents, persistEvent, queryEvents, clearEvents,
-  logEvent, recentEvents, fireWebhook, getState, setState,
+  logEvent, recentEvents, fireWebhook, getState, setState, getDb,
   saveDigest, listDigests, getDigest, getLatestDigest, deleteDigest, purgeOldDigests,
 };

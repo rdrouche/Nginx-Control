@@ -65,6 +65,42 @@ function enroll({ hostnameProposed, fingerprint }) {
 }
 
 /**
+ * Create an agent already approved (v12.58.0 — deployment kit generated from
+ * the dashboard): the operator is the one creating it, so there is no
+ * enrollment request to approve. Same record shape as enroll()+approve(), the
+ * raw token is returned once. `deployOptions` (never a secret) is kept so the
+ * kit can be regenerated after a token rotation.
+ */
+function createApproved({ name, fingerprint, deployOptions }, by) {
+  const state = loadState();
+  const id = newAgentId(state);
+  const rawToken = generateToken();
+  const now = Date.now();
+  const record = {
+    id, hostnameProposed: name, fingerprint: fingerprint || '',
+    status: 'approved', tokenHash: hashToken(rawToken),
+    createdAt: now, decidedAt: now, decidedBy: by, createdBy: by, provisioned: true,
+    lastManifestAt: null, lastManifestOk: null, lastManifestError: null,
+    vhostCount: 0, generatedFiles: [], lastVhosts: [],
+    protocolVersion: null, metrics: null, metricsAt: null,
+    lastManifestBody: null, deployOptions: deployOptions || null,
+  };
+  state.agents[id] = record;
+  saveState(state);
+  return { agent: record, rawToken };
+}
+
+/** Remember the (secret-free) deployment options of an agent. */
+function setDeployOptions(id, deployOptions) {
+  const state = loadState();
+  const a = state.agents[id];
+  if (!a) return null;
+  a.deployOptions = deployOptions || null;
+  saveState(state);
+  return a;
+}
+
+/**
  * Approve a pending (or previously rejected/revoked, re-approved) agent:
  * generates a fresh bearer token, persists only its SHA-256 hash, and
  * returns the raw token exactly once — the caller (features/agents.js's
@@ -206,6 +242,6 @@ function getGeneratedFiles() {
 
 module.exports = {
   STATE_KEY, loadState, saveState,
-  listAgents, getAgent, enroll, approve, reject, revoke, remove,
+  listAgents, getAgent, enroll, createApproved, setDeployOptions, approve, reject, revoke, remove,
   regenerateToken, findByToken, recordManifestResult, getGeneratedFiles,
 };

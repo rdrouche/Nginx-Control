@@ -60,7 +60,7 @@ function checkTarget({ scheme, host, port, hostHeader }, { timeoutMs = 5000, ver
     let settled = false;
     const finish = (result) => { if (!settled) { settled = true; resolve({ ...result, ms: Date.now() - start }); } };
 
-    const requestHeaders = { Host: hostHeader || host, 'User-Agent': 'nginx-control-backend-check' };
+    const requestHeaders = { Host: hostHeader || host, 'User-Agent': cfg.HTTP_USER_AGENT };
     const reqOptions = {
       host, port, path: '/', method: 'GET',
       headers: requestHeaders,

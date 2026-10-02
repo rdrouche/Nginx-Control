@@ -27,6 +27,7 @@ async function initAuth() {
       document.getElementById('nav-scheduler').style.display = '';
       document.getElementById('nav-config-editor').style.display = '';
       document.getElementById('nav-system-info').style.display = '';
+      document.getElementById('nav-containers').style.display = '';
     }
     // Disable nav items based on permissions
     applyPermissionsToNav();

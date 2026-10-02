@@ -66,6 +66,35 @@ const check = (n, f) => { try { f(); console.log('  PASS  ' + n); pass++; }
     '    return 301 https://$host$request_uri;',
     '}',
   ].join('\n'));
+  // v12.54.0 : # nginx-control-analyze-rule-{ID}-paths-ignore, deux blocs
+  // partageant le meme server_name (union par regle, ordre indifferent).
+  fs.writeFileSync(path.join(sitesDir, 'f.conf'), [
+    'server {',
+    '    listen 443 ssl;',
+    '    server_name wp.example.com;',
+    '    # nginx-control-analyze-rule-1-paths-ignore: /wp-json/wpa/v1/verify-session, /a*',
+    '    location / { proxy_pass http://10.0.0.6:8080; }',
+    '}',
+    'server {',
+    '    listen 80;',
+    '    server_name wp.example.com;',
+    '    # nginx-control-analyze-rule-1-paths-ignore: /b',
+    '    # nginx-control-analyze-rule-4-paths-ignore: /c',
+    '    return 301 https://$host$request_uri;',
+    '}',
+  ].join('\n'));
+  // Retour utilisateur (v12.50.0) : "commentaire dans la configuration vhost
+  // pour ignore la remediation ... comme cela on garde les alertes mais [pas]
+  // de blocage" — distinct de "# nginx-control-analyze: off" (b.conf), qui
+  // coupe l alerte elle-meme.
+  fs.writeFileSync(path.join(sitesDir, 'e.conf'), [
+    'server {',
+    '    # nginx-control-analyze-no-remediation: on',
+    '    listen 443 ssl;',
+    '    server_name e.example.com;',
+    '    location / { proxy_pass http://10.0.0.5:8080; }',
+    '}',
+  ].join('\n'));
 
   // Faux "agent" : capture le corps du POST /api/vhost-rules.
   let captured = null;
@@ -105,17 +134,37 @@ const check = (n, f) => { try { f(); console.log('  PASS  ' + n); pass++; }
   await new Promise(r => setTimeout(r, 50));
 
   check('un appel a bien ete recu', () => assert.ok(captured, 'aucun POST /api/vhost-rules capture'));
-  check('vhost sans flag -> enabled:true, aucune regle ignoree', () => {
-    assert.deepStrictEqual(captured.vhosts['a.example.com'], { enabled: true, ignore: [] });
+  check('vhost sans flag -> enabled:true, aucune regle ignoree, remediation non exclue', () => {
+    assert.deepStrictEqual(captured.vhosts['a.example.com'], { enabled: true, ignore: [], noRemediation: false });
   });
   check('vhost avec # nginx-control-analyze: off -> enabled:false', () => {
     assert.strictEqual(captured.vhosts['b.internal'].enabled, false);
   });
   check('vhost avec # nginx-control-analyze-ignore-rules: 1, 2, 4 -> ignore:[1,2,4], enabled reste true', () => {
-    assert.deepStrictEqual(captured.vhosts['c.example.com'], { enabled: true, ignore: [1, 2, 4] });
+    assert.deepStrictEqual(captured.vhosts['c.example.com'], { enabled: true, ignore: [1, 2, 4], noRemediation: false });
   });
   check('vhost avec bloc :443 (ignore-rules) + bloc :80 de redirection (sans commentaire) -> le bloc :80 ne doit jamais ecraser le reglage du bloc :443', () => {
-    assert.deepStrictEqual(captured.vhosts['d.example.com'], { enabled: true, ignore: [3] });
+    assert.deepStrictEqual(captured.vhosts['d.example.com'], { enabled: true, ignore: [3], noRemediation: false });
+  });
+  check('v12.54.0 : # nginx-control-analyze-rule-N-paths-ignore -> pathsIgnore par regle, union des blocs, motif invalide ecarte', () => {
+    assert.deepStrictEqual(captured.vhosts['wp.example.com'], {
+      enabled: true, ignore: [], noRemediation: false,
+      pathsIgnore: { 1: ['/wp-json/wpa/v1/verify-session', '/a*', '/b'], 4: ['/c'] },
+    });
+  });
+  check('v12.54.0 : sans directive, aucune cle pathsIgnore dans la charge utile', () => {
+    assert.ok(!('pathsIgnore' in captured.vhosts['a.example.com']));
+  });
+  check('parseAnalyzePathsIgnore : bornes et validation', () => {
+    const { parseAnalyzePathsIgnore } = require('../lib/vhost-targets');
+    const many = Array.from({ length: 80 }, (_, i) => '/p' + i).join(',');
+    const r = parseAnalyzePathsIgnore('# nginx-control-analyze-rule-1-paths-ignore: ' + many + ',nope,' + '/' + 'x'.repeat(300));
+    assert.strictEqual(r[1].length, 50);
+    assert.deepStrictEqual(parseAnalyzePathsIgnore('# nginx-control-analyze-rule-2-paths-ignore: rien,*'), {});
+    assert.deepStrictEqual(parseAnalyzePathsIgnore('location /x { # nginx-control-analyze-rule-1-paths-ignore: /a\n}'), {});
+  });
+  check('vhost avec # nginx-control-analyze-no-remediation: on -> noRemediation:true, alertes/regles inchangees', () => {
+    assert.deepStrictEqual(captured.vhosts['e.example.com'], { enabled: true, ignore: [], noRemediation: true });
   });
 
   console.log('\npushVhostRules() — analyzer non active');

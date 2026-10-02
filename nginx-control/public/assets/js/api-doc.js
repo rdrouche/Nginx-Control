@@ -57,6 +57,7 @@ const ENDPOINT_GROUPS=[
     {m:'GET',p:'/git/status',d:'État du dépôt (diff, hash, log)',dEn:'Repository status (diff, hash, log)'},
     {m:'GET',p:'/git/test-connection',d:'Vérifie l’accès au dépôt distant',dEn:'Check access to the remote repository'},
     {m:'POST',p:'/git/pull',d:'git pull — étape 1 de l’automatisation CI/CD',dEn:'git pull — step 1 of the CI/CD automation'},
+    {m:'POST',p:'/nginx/test-ephemeral',d:'nginx -t dans un conteneur éphémère sur la config active — sortie complète',dEn:'nginx -t in a throwaway container on the active config — full output'},
     {m:'POST',p:'/git/test',d:'nginx -t sur un checkout éphémère — étape 2, renvoie 422 si invalide',dEn:'nginx -t on an ephemeral checkout — step 2, returns 422 if invalid'},
     {m:'POST',p:'/git/deploy',d:'Pipeline complet PULL → TEST → BACKUP → DEPLOY en un seul appel — voir l’exemple',
       dEn:'Full PULL → TEST → BACKUP → DEPLOY pipeline in one call — see the example',
@@ -228,6 +229,13 @@ const ENDPOINT_GROUPS=[
     {m:'POST',p:'/error-pages/container/start',d:'Démarrer le conteneur',dEn:'Start the container'},
     {m:'POST',p:'/error-pages/container/stop',d:'Arrêter le conteneur',dEn:'Stop the container'},
     {m:'POST',p:'/error-pages/image/update',d:'Mettre à jour l’image',dEn:'Update the image'},
+  ]},
+  {cat:'Challenge HTTP', catKey:'challenge', items:[
+    {m:'GET',p:'/challenge/status',d:'État complet : réglages, conteneur, fichiers nginx, IP signalées',dEn:'Full status: settings, container, nginx files, flagged IPs'},
+    {m:'POST',p:'/challenge/apply',d:'Régénérer les fichiers nginx du challenge et recharger nginx',dEn:'Regenerate the challenge nginx files and reload nginx'},
+    {m:'POST',p:'/challenge/container/start',d:'Démarrer / recréer le conteneur',dEn:'Start / recreate the container'},
+    {m:'POST',p:'/challenge/container/stop',d:'Arrêter le conteneur',dEn:'Stop the container'},
+    {m:'POST',p:'/challenge/image/update',d:'Mettre à jour l’image',dEn:'Update the image'},
   ]},
   {cat:'Administration', catKey:'admin', items:[
     {m:'GET',p:'/system-info',d:'Registre de configuration du dashboard (admin)',dEn:'Dashboard configuration registry (admin)'},

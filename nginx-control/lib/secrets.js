@@ -60,4 +60,18 @@ function unmaskSecrets(newText, oldText) {
   }).join('\n');
 }
 
-module.exports = { SECRET_KEY_RE, MASK_PLACEHOLDER, maskSecretsInConfig, unmaskSecrets };
+/**
+ * Apres unmaskSecrets() : un secret qui est toujours le masque n'avait aucune
+ * valeur precedente a restaurer (champ vide a l'origine). Ecrire « ******** »
+ * en faisait un vrai mot de passe ; on le remet a vide.
+ */
+function clearUnresolvedMasks(text) {
+  if (!text) return text;
+  return text.split('\n').map(line => {
+    const m = line.match(SECRET_KEY_RE);
+    if (!m) return line;
+    return m[5].trim().replace(/^["']|["']$/g, '') === MASK_PLACEHOLDER ? `${m[1]}${m[2]}${m[3]}${m[4]}""${m[6]}` : line;
+  }).join('\n');
+}
+
+module.exports = { SECRET_KEY_RE, MASK_PLACEHOLDER, maskSecretsInConfig, unmaskSecrets, clearUnresolvedMasks };

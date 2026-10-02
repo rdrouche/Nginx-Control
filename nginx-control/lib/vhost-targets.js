@@ -255,6 +255,28 @@ function parseVhostFile(content, upstreams) {
     const analyzeIgnoreRuleIds = analyzeIgnoreMatch
       ? analyzeIgnoreMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite)
       : [];
+    // Retour utilisateur (v12.50.0) : "prevoir aussi un commentaire dans la
+    // configuration vhost pour ignore la remediation sur ce vhost particulier
+    // -- comme cela on garde les alertes mais [pas] de blocage". Distinct de
+    // `# nginx-control-analyze: off` (qui coupe l ALERTE elle-meme) : ce
+    // commentaire ne change rien a la detection/aux alertes, il retire
+    // seulement les occurrences de CE vhost du comptage utilise par le
+    // mecanisme "Blocklist a la CrowdSec" (features/blocklists.js) pour
+    // decider de bloquer une IP — voir pushVhostRules() qui agrege ce champ
+    // par nom de vhost, meme mecanisme que analyzeEnabled/analyzeIgnoreRuleIds.
+    const analyzeNoRemediationMatch = body.match(/^\s*#\s*nginx-control-analyze-no-remediation\s*:\s*(on|off)\s*$/im);
+    const analyzeNoRemediation = !!analyzeNoRemediationMatch && analyzeNoRemediationMatch[1].toLowerCase() === 'on';
+
+    // Retour utilisateur (v12.54.0) : un endpoint legitime qui repond 403 aux
+    // visiteurs non connectes (ex. WordPress /wp-json/wpa/v1/verify-session)
+    // declenche la regle brute force pour des visiteurs normaux. Directive par
+    // regle et par bloc server{} :
+    //   # nginx-control-analyze-rule-1-paths-ignore: /wp-json/wpa/v1/verify-session,/autre
+    // Les requetes de CE vhost vers ces chemins (query string ignoree) ne
+    // comptent plus pour la regle {ID} — les autres regles les voient toujours.
+    // Motif : chemin exact, ou prefixe s il se termine par "*". Plusieurs
+    // lignes pour une meme regle s additionnent.
+    const analyzePathsIgnore = parseAnalyzePathsIgnore(body);
 
     const locations = [];
     for (const { match: lm, body: lbody } of extractBlocks(body, /(?<![A-Za-z0-9_$.-])location\s+([^{]+?)\s*\{/g)) {
@@ -286,9 +308,36 @@ function parseVhostFile(content, upstreams) {
       const monitoringIgnored = !!monitoringIgnoreMatch && monitoringIgnoreMatch[1].toLowerCase() === 'on';
       locations.push({ path: lm[1].trim(), ...resolved, sslVerifyOff, monitoringIgnored });
     }
-    serverBlocks.push({ serverNames, ssl, listen, redirectsToHttps, monitoring, diagnosticEnabled, analyzeEnabled, analyzeIgnoreRuleIds, locations });
+    serverBlocks.push({ serverNames, ssl, listen, redirectsToHttps, monitoring, diagnosticEnabled, analyzeEnabled, analyzeIgnoreRuleIds, analyzeNoRemediation, analyzePathsIgnore, locations });
   }
   return serverBlocks;
+}
+
+// Memes bornes que sanitizePathsIgnore() cote analyzer : un fichier vhost mal
+// forme ne doit pas pouvoir gonfler la requete poussee ni le cout par requete.
+const PATHS_IGNORE_MAX_PER_RULE = 50;
+const PATHS_IGNORE_MAX_LEN = 256;
+
+/**
+ * Extrait `# nginx-control-analyze-rule-{ID}-paths-ignore: /a,/b` d un corps de
+ * bloc server{} -> { [ruleId]: string[] }. Les motifs invalides (ne commencent
+ * pas par "/", trop longs) sont ecartes, les doublons fusionnes.
+ */
+function parseAnalyzePathsIgnore(body) {
+  const out = {};
+  const re = /^[ \t]*#[ \t]*nginx-control-analyze-rule-(\d{1,6})-paths-ignore[ \t]*:[ \t]*(.+?)[ \t]*$/gim;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    const id = parseInt(m[1], 10);
+    const list = out[id] || (out[id] = []);
+    for (const raw of m[2].split(',')) {
+      const pat = raw.trim();
+      if (pat.length < 1 || pat.length > PATHS_IGNORE_MAX_LEN || pat[0] !== '/') continue;
+      if (!list.includes(pat) && list.length < PATHS_IGNORE_MAX_PER_RULE) list.push(pat);
+    }
+    if (!list.length) delete out[id];
+  }
+  return out;
 }
 
 /** Every vhost in `sitesDir`, with each location's backend resolved. */
@@ -312,5 +361,5 @@ function listVhostTargets({ sitesDir, upstreamDirs }) {
 
 module.exports = {
   extractBlocks, splitHostPort, parseUpstreams, resolveProxyPass, parseVhostFile, listVhostTargets,
-  fileDiagnosticEnabled,
+  fileDiagnosticEnabled, parseAnalyzePathsIgnore,
 };

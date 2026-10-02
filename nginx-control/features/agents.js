@@ -46,6 +46,7 @@ const { parseAndValidate } = require('../lib/agents-yaml');
 const { validateManifest, agentVhostFileName, generateAgentVhostContent, sanitizeForFilename } = require('../lib/agent-manifest');
 const { getTunnelSecret } = require('../lib/agent-tunnel-secret');
 const agentsStore = require('../lib/agents-store');
+const agentBundle = require('../lib/agent-bundle');
 const agentVhostDecisions = require('../lib/agent-vhost-decisions');
 const { withLock } = require('../lib/nginx-write-lock');
 
@@ -718,8 +719,48 @@ async function handleEnroll(req, res, clientIp) {
   return send(res, 200, { agentId: record.id, status: record.status });
 }
 
+const MAX_AGENTS = 200;
+
+/**
+ * Kit de déploiement (.env + compose.yml) d'un agent dont on vient de produire
+ * le jeton. `input` : options saisies (formulaire) ; à défaut, celles déjà
+ * conservées avec l'agent. Retourne {ok:false,error} si une option est invalide.
+ */
+function bundleFor(agent, token, input) {
+  const base = { ...(agent.deployOptions || {}) };
+  const merged = { ...base, ...(input && typeof input === 'object' ? input : {}), name: agent.hostnameProposed };
+  if (merged.fingerprint === undefined) merged.fingerprint = agent.fingerprint || '';
+  const v = agentBundle.validateOptions(merged);
+  if (!v.ok) return v;
+  return { ok: true, value: v.value, warnings: v.warnings, bundle: agentBundle.buildBundle(v.value, token) };
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────
 function register(router) {
+  // POST /api/agents/create — l'opérateur crée l'agent depuis le dashboard : approuvé
+  // d'emblée, jeton généré ici (jamais choisi par l'agent), kit .env + compose.yml
+  // renvoyé UNE fois avec le jeton. Aucun enrôlement ni approbation à faire ensuite.
+  router.post('/api/agents/create', async ({ req, res, session }) => {
+    if (!hasPerm(session, PERMS.DEPLOY)) return httpLib.forbidden(res);
+    const { settings } = loadConfig();
+    if (!settings.enable) return httpLib.forbidden(res, 'Agents distants desactives (config/agents.yml: enable: true requis)');
+    const body = await parseBody(req);
+    const v = agentBundle.validateOptions(body);
+    if (!v.ok) return httpLib.badRequest(res, v.error);
+    const existing = agentsStore.listAgents();
+    if (existing.length >= MAX_AGENTS) return httpLib.badRequest(res, `${MAX_AGENTS} agents maximum`);
+    if (existing.some(a => a.hostnameProposed === v.value.name && (a.status === 'approved' || a.status === 'pending'))) {
+      return httpLib.badRequest(res, 'Un agent actif porte déjà ce nom — choisissez-en un autre');
+    }
+    const { agent, rawToken } = agentsStore.createApproved(
+      { name: v.value.name, fingerprint: v.value.fingerprint, deployOptions: agentBundle.storableOptions(v.value) }, session.username);
+    logEvent('agents.create', { agentId: agent.id, name: v.value.name, by: session.username }, 'api');
+    return send(res, 200, {
+      agent: { id: agent.id, name: agent.hostnameProposed, status: agent.status },
+      token: rawToken, warnings: v.warnings, bundle: agentBundle.buildBundle(v.value, rawToken),
+    });
+  });
+
   router.get('/api/agents', async ({ res, session }) => {
     if (!hasPerm(session, PERMS.VIEW_CONFIGS)) return httpLib.forbidden(res);
     const { settings, errors } = loadConfig();
@@ -788,9 +829,14 @@ function register(router) {
 
     if (action === 'approve') {
       if (agent.status === 'approved') return httpLib.badRequest(res, 'Deja approuve');
+      const body = await parseBody(req).catch(() => ({}));
       const result = agentsStore.approve(id, session.username);
       logEvent('agents.approve', { agentId: id, by: session.username }, 'api');
-      return send(res, 200, { agent: { id: result.agent.id, status: result.agent.status }, token: result.rawToken });
+      // Kit .env/compose.yml proposé directement quand le client indique l'URL du dashboard.
+      const kit = body && body.dashboardUrl ? bundleFor(result.agent, result.rawToken, body) : null;
+      if (kit && kit.ok) agentsStore.setDeployOptions(id, agentBundle.storableOptions(kit.value));
+      return send(res, 200, { agent: { id: result.agent.id, status: result.agent.status }, token: result.rawToken,
+        ...(kit && kit.ok ? { bundle: kit.bundle, warnings: kit.warnings } : {}) });
     }
     if (action === 'reject') {
       if (agent.status === 'approved') return httpLib.badRequest(res, 'Deja approuve — revoquer plutot que rejeter');
@@ -820,6 +866,7 @@ function register(router) {
     }
     if (action === 'regenerate-token') {
       if (agent.status !== 'approved') return httpLib.badRequest(res, "Cet agent n'est pas approuve");
+      const body = await parseBody(req).catch(() => ({}));
       const result = agentsStore.regenerateToken(id);
       // Fix (audit report, Basse/"Agents (dashboard)"): same reasoning as
       // revoke above — an already-open tunnel was authenticated with the OLD
@@ -830,7 +877,8 @@ function register(router) {
       // drops.
       deps.closeTunnel(id, 'jeton regenere');
       logEvent('agents.regenerate-token', { agentId: id, by: session.username }, 'api');
-      return send(res, 200, { token: result.rawToken });
+      const kit = (body && body.dashboardUrl) || agent.deployOptions ? bundleFor(result.agent, result.rawToken, body) : null;
+      return send(res, 200, { token: result.rawToken, ...(kit && kit.ok ? { bundle: kit.bundle, warnings: kit.warnings } : {}) });
     }
     return httpLib.notFound(res, 'Action inconnue');
   });
@@ -894,5 +942,5 @@ module.exports = {
   resolveAgentSsl, triggerAgentCertbotIssuanceIfDue, applyManifestForAgent, removeAgentVhosts,
   loadCertbotState, saveCertbotState, clearCertbotStateForServerNames,
   listAgentsNeedingSslRecheck, reapplyAgentManifest, buildAgentVhostView,
-  AGENT_ID_RE, AGENT_NAME_RE,
+  AGENT_ID_RE, AGENT_NAME_RE, bundleFor,
 };

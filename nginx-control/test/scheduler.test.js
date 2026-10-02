@@ -69,95 +69,150 @@ const scheduler = require('../lib/scheduler');
     assert.doesNotThrow(() => scheduler.matchCron('n importe quoi', new Date()));
   });
 
-  console.log('\nconfiguration effectivement lue depuis scheduler.yml (regression : schedCfg jamais assigne)');
-  await check('une tache activee avec un cron qui correspond toujours se declenche reellement', async () => {
-    // Bug reel, trouve en ecrivant un test pour la nouvelle tache de
-    // redemarrage planifie : `loadSchedConfig()` (lib/notify.js) met a jour
-    // SA PROPRE variable interne et renvoie la config analysee — ce fichier
-    // declare son propre `schedCfg` separe, lu par toutes les taches
-    // planifiees, mais la valeur de retour n etait jamais recuperee dans la
-    // boucle de sondage NI au demarrage. `schedCfg` restait donc a `null`
-    // pour toujours : chaque `schedCfg?.xxx` s evaluait a `undefined`, sans
-    // la moindre erreur ni avertissement, quel que soit le contenu reel de
-    // scheduler.yml. Reload planifie, sauvegarde planifiee et redemarrage
-    // GoAccess planifie n avaient donc jamais pu se declencher.
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'nginx_restart:\n  enable: true\n  cron: "* * * * *"\n  notify: false\n'
-    );
+  console.log('\ntaches stockees en base (v12.56.0) — remplace la lecture de scheduler.yml');
+  const events = require('../lib/events');
+  events.initEventsDb();
+  const store = require('../lib/scheduler-store');
+  const fs = require('fs'), path = require('path');
+  const clearTasks = () => { for (const t of store.listTasks()) store.deleteTask(t.id); };
+  const everyMinute = { mode: 'interval', every: 1, unit: 'minutes' };
+  const seed = (type, extra = {}) => {
+    const r = store.createTask({ name: 'test ' + type, type, enabled: true, schedule: everyMinute, params: {}, notify: false, ...extra });
+    assert.ok(r.ok, r.error);
+    return r.task;
+  };
+  const tick = async () => {
+    const realSetInterval = global.setInterval;
+    let captured = null;
+    global.setInterval = (fn) => { captured = fn; return { unref(){} }; };
+    try { scheduler.startScheduler(); assert.ok(captured, 'setInterval doit avoir ete appele au demarrage'); await captured(); }
+    finally { global.setInterval = realSetInterval; }
+    await new Promise(r => setTimeout(r, 150)); // taches tire-et-oublie
+  };
+
+  await check('une tache activee dont le cron correspond se declenche reellement (via le tick)', async () => {
+    clearTasks();
+    seed('nginx_restart');
     let restartCalled = false;
     scheduler.setTasks({
       execNginx: async () => ({ valid: true, stdout: 'ok' }),
       restartContainer: async () => { restartCalled = true; },
     });
-
-    const realSetInterval = global.setInterval;
-    let captured = null;
-    global.setInterval = (fn) => { captured = fn; return { unref(){} }; };
-    try {
-      scheduler.startScheduler();
-      assert.ok(captured, 'setInterval doit avoir ete appele au demarrage');
-      await captured();
-    } finally { global.setInterval = realSetInterval; }
-
-    assert.strictEqual(restartCalled, true,
-      'une tache activee, avec un cron qui correspond toujours, doit reellement se declencher');
+    await tick();
+    assert.strictEqual(restartCalled, true, 'une tache activee, avec un cron qui correspond toujours, doit reellement se declencher');
   });
-  await check('une tache desactivee (enable:false) ne se declenche jamais, meme avec un cron qui correspond', async () => {
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'nginx_restart:\n  enable: false\n  cron: "* * * * *"\n  notify: false\n'
-    );
+  await check('une tache desactivee ne se declenche jamais, meme avec un cron qui correspond', async () => {
+    clearTasks();
+    seed('nginx_restart', { enabled: false });
     let restartCalled = false;
     scheduler.setTasks({
       execNginx: async () => ({ valid: true, stdout: 'ok' }),
       restartContainer: async () => { restartCalled = true; },
     });
-    const realSetInterval = global.setInterval;
-    let captured = null;
-    global.setInterval = (fn) => { captured = fn; return { unref(){} }; };
-    try {
-      scheduler.startScheduler();
-      await captured();
-    } finally { global.setInterval = realSetInterval; }
+    await tick();
     assert.strictEqual(restartCalled, false);
   });
   await check('nginx -t en echec bloque le redemarrage planifie, meme si le cron correspond', async () => {
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'nginx_restart:\n  enable: true\n  cron: "* * * * *"\n  notify: false\n'
-    );
+    clearTasks();
+    const t = seed('nginx_restart');
     let restartCalled = false;
     scheduler.setTasks({
       execNginx: async () => ({ valid: false, stderr: 'nginx: configuration file test failed' }),
       restartContainer: async () => { restartCalled = true; },
     });
-    const realSetInterval = global.setInterval;
-    let captured = null;
-    global.setInterval = (fn) => { captured = fn; return { unref(){} }; };
-    try {
-      scheduler.startScheduler();
-      await captured();
-    } finally { global.setInterval = realSetInterval; }
+    await tick();
     assert.strictEqual(restartCalled, false,
-      'un redemarrage sur une configuration cassee est pire qu un reload sur une configuration cassee : le conteneur se retrouve sans nginx du tout, pas seulement avec une ancienne configuration qui continue de servir');
+      'un redemarrage sur une configuration cassee est pire qu un reload sur une configuration cassee : le conteneur se retrouve sans nginx du tout');
+    assert.strictEqual(store.getTask(t.id).lastStatus, 'error');
+  });
+  await check('nginx -t en echec bloque aussi le reload planifie', async () => {
+    clearTasks();
+    seed('nginx_reload');
+    const cmds = [];
+    scheduler.setTasks({
+      execNginx: async (c) => { cmds.push(c); return { valid: false, stderr: 'test failed' }; },
+    });
+    await tick();
+    assert.deepStrictEqual(cmds, ['nginx -t']);
+  });
+  await check('chaque execution est enregistree (statut, duree, historique, dernier message)', async () => {
+    clearTasks();
+    const t = seed('nginx_reload');
+    scheduler.setTasks({ execNginx: async () => ({ valid: true, stdout: 'ok' }) });
+    const r = await scheduler.runTaskNow(t.id, 'romain');
+    assert.strictEqual(r.status, 'ok');
+    const cur = store.getTask(t.id);
+    assert.deepStrictEqual([cur.lastStatus, cur.runCount], ['ok', 1]);
+    assert.ok(cur.lastDurationMs >= 0);
+    const runs = store.listRuns(t.id);
+    assert.deepStrictEqual([runs.length, runs[0].trigger, runs[0].by], [1, 'manual', 'romain']);
+  });
+  await check('une tache ne se chevauche jamais elle-meme (deuxieme lancement -> busy)', async () => {
+    clearTasks();
+    const t = seed('nginx_restart');
+    let release;
+    scheduler.setTasks({
+      execNginx: async () => ({ valid: true }),
+      restartContainer: () => new Promise(r => { release = r; }),
+    });
+    const first = scheduler.runTaskNow(t.id, 'a');
+    await new Promise(r => setTimeout(r, 30));
+    assert.strictEqual(scheduler.isRunning(t.id), true);
+    const second = await scheduler.runTaskNow(t.id, 'b');
+    assert.strictEqual(second.status, 'busy');
+    release();
+    assert.strictEqual((await first).status, 'ok');
+    assert.strictEqual(scheduler.isRunning(t.id), false);
+  });
+  await check('une exception dans une tache est capturee : statut error, jamais de plantage', async () => {
+    clearTasks();
+    const t = seed('backup', { params: { mode: 'local' } });
+    scheduler.setTasks({ createBackupZip: async () => { throw new Error('disque plein'); } });
+    const r = await scheduler.runTaskNow(t.id, 'x');
+    assert.strictEqual(r.status, 'error');
+    assert.ok(/disque plein/.test(r.message));
+  });
+
+  console.log('\nimport unique de l ancien scheduler.yml');
+  await check('les entrees de scheduler.yml deviennent des taches (etat, cron, parametres conserves), une seule fois', async () => {
+    clearTasks();
+    events.setState('scheduler_tasks_migrated_v1', null);
+    fs.writeFileSync(path.join(tmpConfigDir, 'scheduler.yml'), [
+      'nginx_reload:', '  enable: true', '  cron: "0 3 * * *"', '  notify: true',
+      'nginx_restart:', '  enable: false', '  cron: "0 4 * * 0"', '  grace_seconds: 20', '  notify: false',
+      'digest:', '  enable: true', '  cron: "0 7 * * 1"', '  period_hours: 168', '  notify: true', '  recipients:', '    - admin@example.com',
+      'backup:', '  enable: true', '  cron: "0 2 * * *"', '  mode: both', '  notify_on_failure: true',
+    ].join('\n'));
+    scheduler.startScheduler.call(null); // restaure setInterval reel ci-dessous
+  }).catch(() => {});
+  clearTasks();
+  events.setState('scheduler_tasks_migrated_v1', null);
+  {
+    const realSetInterval = global.setInterval; global.setInterval = () => ({ unref(){} });
+    try { scheduler.startScheduler(); } finally { global.setInterval = realSetInterval; }
+  }
+  await check('migration : 4 taches creees avec leurs reglages', () => {
+    const list = store.listTasks();
+    assert.strictEqual(list.length, 4);
+    const by = Object.fromEntries(list.map(t => [t.type, t]));
+    assert.deepStrictEqual([by.nginx_reload.enabled, by.nginx_reload.cron, by.nginx_reload.notify], [true, '0 3 * * *', true]);
+    assert.deepStrictEqual([by.nginx_restart.enabled, by.nginx_restart.params.grace_seconds, by.nginx_restart.schedule.mode], [false, 20, 'weekly']);
+    assert.deepStrictEqual([by.digest.params.period_hours, by.digest.params.recipients], [168, ['admin@example.com']]);
+    assert.deepStrictEqual([by.backup.params.mode, by.backup.notify], ['both', true]);
+  });
+  await check('migration non rejouee : une tache supprimee ne revient pas au demarrage suivant', () => {
+    const t = store.listTasks().find(x => x.type === 'digest');
+    store.deleteTask(t.id);
+    const realSetInterval = global.setInterval; global.setInterval = () => ({ unref(){} });
+    try { scheduler.startScheduler(); } finally { global.setInterval = realSetInterval; }
+    assert.strictEqual(store.listTasks().length, 3);
   });
 
   console.log('\ndigest planifie');
-  await check('runScheduledDigest() genere et sauvegarde reellement un digest', async () => {
-    // Appel direct plutot que via le tick capture : les taches planifiees
-    // sont volontairement "tire et oublie" dans la boucle de sondage (une
-    // tache lente ne doit pas bloquer les autres), donc capturer le tick et
-    // verifier immediatement apres cree une course avec le propre travail
-    // asynchrone du digest (generation + ecriture SQLite). Un appel direct
-    // a la fonction exportee, lui, est correctement attendu de bout en bout.
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'digest:\n  enable: true\n  cron: "* * * * *"\n  period_hours: 24\n  notify: false\n'
-    );
+  await check('la tache digest genere et sauvegarde reellement un digest', async () => {
+    clearTasks();
+    const t = seed('digest', { params: { period_hours: 24 } });
     const digest = require('../lib/digest');
-    const events = require('../lib/events');
-    events.initEventsDb();
     digest.configure({
       analyzerApi: async (p) => p.includes('vhosts')
         ? { data: { vhosts: [{ vhost: 'test.fr', requests: 321, bytes: 10, errors: 0 }] } }
@@ -165,106 +220,93 @@ const scheduler = require('../lib/scheduler');
       crowdsecGet: null, crowdsecConfigured: () => false,
       listExistingCerts: () => [],
     });
-
-    scheduler.startScheduler();   // recharge schedCfg avec la nouvelle config
-    await scheduler.runScheduledDigest();
-
+    const r = await scheduler.runTaskNow(t.id, 'test');
+    assert.strictEqual(r.status, 'ok', r.message);
     const latest = events.getLatestDigest();
     assert.ok(latest, 'un digest doit avoir ete sauvegarde');
     assert.strictEqual(latest.traffic.totalRequests, 321);
   });
-  await check('digest desactive (enable:false) ne genere rien', async () => {
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'digest:\n  enable: false\n  cron: "* * * * *"\n'
-    );
-    const events = require('../lib/events');
+  await check('digest desactive : le tick ne genere rien', async () => {
+    clearTasks();
+    seed('digest', { enabled: false });
     const before = events.listDigests(1)[0]?.id || 0;
-    scheduler.startScheduler();
-    await scheduler.runScheduledDigest();
-    const after = events.listDigests(1)[0]?.id || 0;
-    assert.strictEqual(after, before, 'aucun nouveau digest ne doit apparaitre');
+    await tick();
+    assert.strictEqual(events.listDigests(1)[0]?.id || 0, before, 'aucun nouveau digest ne doit apparaitre');
   });
-  await check('le declencheur de tick se met bien en route pour le digest (cron qui correspond)', async () => {
-    // Verifie que la boucle de sondage appelle reellement runScheduledDigest
-    // quand le cron correspond — sans verifier le contenu ecrit (course
-    // deja expliquee plus haut), juste que l appel part.
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'digest:\n  enable: true\n  cron: "* * * * *"\n'
-    );
+  await check('le declencheur de tick se met en route pour le digest (cron qui correspond)', async () => {
+    clearTasks();
+    seed('digest');
     const digest = require('../lib/digest');
     let generateCalled = false;
     const realGenerate = digest.generateDigest;
     digest.generateDigest = async (...args) => { generateCalled = true; return realGenerate(...args); };
     digest.configure({ analyzerApi: null, crowdsecGet: null, crowdsecConfigured: () => false, listExistingCerts: () => [] });
-
-    const realSetInterval = global.setInterval;
-    let captured = null;
-    global.setInterval = (fn) => { captured = fn; return { unref(){} }; };
-    try {
-      scheduler.startScheduler();
-      captured();   // volontairement non attendu : on verifie juste le declenchement
-      await new Promise(r => setTimeout(r, 100));
-    } finally { global.setInterval = realSetInterval; digest.generateDigest = realGenerate; }
+    try { await tick(); } finally { digest.generateDigest = realGenerate; }
     assert.strictEqual(generateCalled, true);
   });
 
+  console.log('\nredemarrage de l analyzer planifie (v12.56.0)');
+  await check('analyzer_restart appelle restartAnalyzer avec delai et attente, statut ok', async () => {
+    clearTasks();
+    const t = seed('analyzer_restart', { params: { grace_seconds: 15, wait_healthy: true } });
+    let got = null;
+    scheduler.setTasks({ restartAnalyzer: async (o) => { got = o; return { ok: true, healthy: true, message: 'redemarre, API de retour apres 4.0 s' }; } });
+    const r = await scheduler.runTaskNow(t.id, 'x');
+    assert.deepStrictEqual(got, { graceSeconds: 15, waitHealthy: true });
+    assert.strictEqual(r.status, 'ok');
+  });
+  await check('analyzer_restart : API qui ne revient pas -> erreur (pas un faux succes)', async () => {
+    clearTasks();
+    const t = seed('analyzer_restart');
+    scheduler.setTasks({ restartAnalyzer: async () => ({ ok: false, healthy: false, message: "l'API ne repond toujours pas apres 90 s" }) });
+    const r = await scheduler.runTaskNow(t.id, 'x');
+    assert.strictEqual(r.status, 'error');
+    assert.ok(/ne repond/.test(r.message));
+  });
+  await check('analyzer_restart : analyzer desactive -> skipped ; conteneur absent -> error', async () => {
+    clearTasks();
+    const t = seed('analyzer_restart');
+    scheduler.setTasks({ restartAnalyzer: async () => ({ ok: false, skipped: true, message: 'desactive' }) });
+    assert.strictEqual((await scheduler.runTaskNow(t.id, 'x')).status, 'skipped');
+    scheduler.setTasks({ restartAnalyzer: async () => { throw new Error('Conteneur absent'); } });
+    const r = await scheduler.runTaskNow(t.id, 'x');
+    assert.strictEqual(r.status, 'error');
+    assert.ok(/absent/.test(r.message));
+  });
+
   console.log('\nredemarrage GoAccess planifie (regression : bug audit Basse/"Partie 1 et certificats")');
-  await check('runScheduledGoAccessRestart() appelait auparavant des identifiants non declares (ReferenceError avalee par le .catch) ; verifie ici que le cycle complet s execute reellement', async () => {
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'goaccess_restart:\n  enable: true\n  cron: "* * * * *"\n'
-    );
+  await check('le cycle complet GoAccess s execute reellement (liste, statut, redemarrage du seul conteneur actif)', async () => {
+    clearTasks();
+    const t = seed('goaccess_restart');
     let listCalled = false, statusCalled = false, restartCalled = false;
     scheduler.setTasks({
       listGoAccessSources: () => { listCalled = true; return [{ id: 'src1' }, { id: 'src2' }]; },
       getGoAccessContainerStatus: async (id) => { statusCalled = true; return { running: id === 'src1' }; },
       restartGoAccessContainer: async (id) => { restartCalled = true; assert.strictEqual(id, 'src1'); },
     });
-
-    scheduler.startScheduler();   // recharge schedCfg avec la nouvelle config
-    await scheduler.runScheduledGoAccessRestart();
-
-    assert.strictEqual(listCalled, true, 'listGoAccessSources (via tasks.) doit avoir ete appele');
-    assert.strictEqual(statusCalled, true, 'getGoAccessContainerStatus (via tasks.) doit avoir ete appele');
-    assert.strictEqual(restartCalled, true, 'restartGoAccessContainer (via tasks.) doit avoir ete appele pour le conteneur actif');
+    const r = await scheduler.runTaskNow(t.id, 'x');
+    assert.strictEqual(r.status, 'ok', r.message);
+    assert.deepStrictEqual([listCalled, statusCalled, restartCalled], [true, true, true]);
   });
-  await check('goaccess_restart desactive (enable:false) ne declenche aucun appel', async () => {
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'goaccess_restart:\n  enable: false\n  cron: "* * * * *"\n'
-    );
+  await check('goaccess_restart avec sources choisies : seules celles-la sont visees', async () => {
+    clearTasks();
+    const t = seed('goaccess_restart', { params: { sources: ['src2'] } });
+    const seen = [];
+    scheduler.setTasks({
+      listGoAccessSources: () => [{ id: 'src1' }, { id: 'src2' }],
+      getGoAccessContainerStatus: async () => ({ running: true }),
+      restartGoAccessContainer: async (id) => { seen.push(id); },
+    });
+    await scheduler.runTaskNow(t.id, 'x');
+    assert.deepStrictEqual(seen, ['src2']);
+  });
+  await check('goaccess_restart desactive : aucun appel', async () => {
+    clearTasks();
+    seed('goaccess_restart', { enabled: false });
     let called = false;
-    scheduler.setTasks({
-      listGoAccessSources: () => { called = true; return []; },
-      getGoAccessContainerStatus: async () => ({ running: false }),
-      restartGoAccessContainer: async () => {},
-    });
-    scheduler.startScheduler();
-    await scheduler.runScheduledGoAccessRestart();
+    scheduler.setTasks({ listGoAccessSources: () => { called = true; return []; } });
+    await tick();
     assert.strictEqual(called, false);
-  });
-  await check('le declencheur de tick se met bien en route pour le redemarrage GoAccess (cron qui correspond)', async () => {
-    require('fs').writeFileSync(
-      require('path').join(tmpConfigDir, 'scheduler.yml'),
-      'goaccess_restart:\n  enable: true\n  cron: "* * * * *"\n'
-    );
-    let listCalled = false;
-    scheduler.setTasks({
-      listGoAccessSources: () => { listCalled = true; return []; },
-      getGoAccessContainerStatus: async () => ({ running: false }),
-      restartGoAccessContainer: async () => {},
-    });
-    const realSetInterval = global.setInterval;
-    let captured = null;
-    global.setInterval = (fn) => { captured = fn; return { unref(){} }; };
-    try {
-      scheduler.startScheduler();
-      captured();   // volontairement non attendu, comme pour le digest ci-dessus
-      await new Promise(r => setTimeout(r, 100));
-    } finally { global.setInterval = realSetInterval; }
-    assert.strictEqual(listCalled, true);
   });
 
   console.log('\nrecheck SSL des agents distants (fix, audit report Basse/"Agents (dashboard)")');

@@ -6,10 +6,11 @@
  * GET /api/agents). Meme convention que docker-autoconfig.js : scope global
  * partage (api(), t(), hasPerm()), pas un module ES.
  *
- * Un agent lui-meme ne s'enrole JAMAIS depuis cette page (pas de bouton
- * "creer un agent") — l'enrolement est initie par l'agent (POST
- * /api/agent/enroll, public, voir le rappel affiche sur la page), cette
- * page ne fait qu'approuver/rejeter/revoquer ce qui arrive.
+ * Deux chemins : (1) v12.58.0 — « Nouvel agent » cree l'agent deja approuve
+ * et fournit le kit .env + compose.yml avec son jeton (POST /api/agents/create) ;
+ * (2) l'agent s'enrole lui-meme (POST /api/agent/enroll, public), cette page
+ * approuve/rejette/revoque ce qui arrive — l'approbation propose alors aussi
+ * le kit. Le jeton n'est jamais reaffiche.
  */
 let agentsLastToken = '';
 
@@ -195,8 +196,9 @@ function agentsButton(label, onClick, variant) {
 }
 
 async function agentsApprove(id) {
-  const r = await api(`/agents/${id}/approve`, { method: 'POST' });
-  if (r && r.token) agentsTokenOpen(r.token);
+  const r = await api(`/agents/${id}/approve`, { method: 'POST', body: JSON.stringify({ dashboardUrl: location.origin }) });
+  if (r && r.bundle) agentsBundleOpen(r.bundle, r.warnings);
+  else if (r && r.token) agentsTokenOpen(r.token);
   await agentsLoad();
 }
 async function agentsReject(id) {
@@ -208,8 +210,9 @@ async function agentsRevoke(id) {
   await agentsLoad();
 }
 async function agentsRegenerateToken(id) {
-  const r = await api(`/agents/${id}/regenerate-token`, { method: 'POST' });
-  if (r && r.token) agentsTokenOpen(r.token);
+  const r = await api(`/agents/${id}/regenerate-token`, { method: 'POST', body: JSON.stringify({ dashboardUrl: location.origin }) });
+  if (r && r.bundle) agentsBundleOpen(r.bundle, r.warnings);
+  else if (r && r.token) agentsTokenOpen(r.token);
   await agentsLoad();
 }
 async function agentsDelete(id) {
@@ -320,4 +323,82 @@ async function agentsVhostPauseResume(serverNames, action) {
   const fresh = d?.agents?.find(a => a.id === id);
   if (fresh) agentsPreviewRender(fresh.vhosts || []);
   await agentsLoad();
+}
+
+// ── Nouvel agent : formulaire + kit de deploiement (v12.58.0) ────────────────
+let agentsBundleData = null;
+
+function agentsNewOpen() {
+  document.getElementById('an-url').value = location.origin;
+  document.getElementById('an-image').value = 'forge.rdr-it.com/dockerfiles/nginx-control-agent';
+  document.getElementById('an-error').textContent = '';
+  agentsNewToggle();
+  document.getElementById('agents-new-overlay').style.display = 'flex';
+}
+function agentsNewClose() { document.getElementById('agents-new-overlay').style.display = 'none'; }
+function agentsNewToggle() {
+  const on = document.getElementById('an-relay').checked;
+  document.getElementById('an-relay-box').style.display = on ? '' : 'none';
+  document.getElementById('an-https-port-row').style.display = on && document.getElementById('an-https').checked ? '' : 'none';
+}
+
+function agentsNewRead() {
+  return {
+    name: document.getElementById('an-name').value.trim(),
+    dashboardUrl: document.getElementById('an-url').value.trim(),
+    tokenMode: document.getElementById('an-tokenmode').value,
+    tunnelEnable: document.getElementById('an-tunnel').checked,
+    pollInterval: document.getElementById('an-poll').value.trim(),
+    restartPolicy: document.getElementById('an-restart').value,
+    image: document.getElementById('an-image').value.trim(),
+    tag: document.getElementById('an-tag').value.trim(),
+    fingerprint: document.getElementById('an-fp').value.trim(),
+    insecureSkipVerify: document.getElementById('an-insecure').checked,
+    relay: {
+      enabled: document.getElementById('an-relay').checked,
+      host: document.getElementById('an-relayhost').value.trim(),
+      httpPort: Number(document.getElementById('an-httpport').value),
+      httpsEnabled: document.getElementById('an-https').checked,
+      httpsPort: Number(document.getElementById('an-httpsport').value),
+      backendInsecure: document.getElementById('an-backinsecure').checked,
+    },
+  };
+}
+
+async function agentsNewSubmit() {
+  const err = document.getElementById('an-error');
+  err.textContent = '';
+  const r = await api('/agents/create', { method: 'POST', body: JSON.stringify(agentsNewRead()) });
+  if (!r || !r.bundle) { err.textContent = (r && r.error) || t('common.error'); return; }
+  agentsNewClose();
+  agentsBundleOpen(r.bundle, r.warnings);
+  await agentsLoad();
+}
+
+function agentsBundleOpen(bundle, warnings) {
+  agentsBundleData = bundle;
+  document.getElementById('ab-env').value = bundle.env;
+  document.getElementById('ab-compose').value = bundle.compose;
+  document.getElementById('ab-shell').value = bundle.shell;
+  document.getElementById('agents-bundle-warnings').textContent = (warnings || []).join(' ');
+  document.getElementById('agents-bundle-steps').textContent = t('agents.bundleSteps');
+  document.getElementById('agents-bundle-overlay').style.display = 'flex';
+}
+function agentsBundleClose() {
+  document.getElementById('agents-bundle-overlay').style.display = 'none';
+  agentsBundleData = null;
+  ['ab-env', 'ab-compose', 'ab-shell'].forEach(id => { document.getElementById(id).value = ''; });
+}
+function agentsBundleCopy(kind) {
+  if (!agentsBundleData) return;
+  copyToClipboard(agentsBundleData[kind]).then(ok => copyFeedback('ab-' + kind + '-copy', ok));
+}
+function agentsBundleDownload(kind) {
+  if (!agentsBundleData) return;
+  const name = kind === 'env' ? '.env' : 'compose.yml';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([agentsBundleData[kind]], { type: 'text/plain' }));
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }

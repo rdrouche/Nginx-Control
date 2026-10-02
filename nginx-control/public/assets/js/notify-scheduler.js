@@ -11,7 +11,7 @@
 // libelles ("Sauvegarder", "Sauvegarde OK", "Erreur : ...", "Règles de
 // notification") plutot que de coincidences entre deux pages sans rapport.
 
-async function initNotify() { await notifyLoad(); }
+async function initNotify() { await Promise.all([notifyLoad(), typeof nfLoad === 'function' ? nfLoad() : null]); }
 
 let notifyRevealed = false;
 
@@ -31,11 +31,6 @@ async function notifyLoad() {
     btn.style.display = d.canReveal ? '' : 'none';
     btn.innerHTML = notifyRevealed ? '\u{1F648} ' + t('common.hide') : '\u{1F441} Secrets';
   }
-  const st = document.getElementById('notify-smtp-status');
-  if (st && d.smtp?.masked) {
-    st.textContent = t('notify.statusMasked');
-    st.style.color = 'var(--text3)';
-  }
 }
 
 async function notifyToggleReveal() {
@@ -44,7 +39,7 @@ async function notifyToggleReveal() {
 }
 
 function notifyTab(tab) {
-  ['smtp','notif','sched'].forEach(function(t) {
+  ['smtp','notif','yaml'].forEach(function(t) {
     const pane = document.getElementById('notify-pane-' + t);
     const btn  = document.getElementById('notify-tab-' + t);
     if (pane) pane.style.display = t === tab ? '' : 'none';
@@ -61,6 +56,7 @@ async function notifySave(type) {
   body[keyMap[type]] = el.value;
   const d = await api('/notify/config-files', { method: 'POST', body: JSON.stringify(body) }).catch(e => ({ error: e.message }));
   const statusEl = document.getElementById('notify-smtp-status');
+  if (d && d.ok && typeof nfLoad === 'function') nfLoad();
   if (d && d.ok) {
     if (statusEl && type === 'smtp') { statusEl.textContent = t('common.saveSuccess'); statusEl.style.color = 'var(--green)'; }
     else alert(t('common.saveSuccess'));
@@ -69,17 +65,7 @@ async function notifySave(type) {
   }
 }
 
-async function notifyTestSmtp() {
-  const to     = document.getElementById('notify-test-addr') && document.getElementById('notify-test-addr').value.trim();
-  const status = document.getElementById('notify-smtp-status');
-  if (!to) { if (status) { status.textContent = t('notify.enterEmail'); status.style.color = 'var(--amber)'; } return; }
-  if (status) { status.textContent = t('notify.sendingInProgress'); status.style.color = 'var(--text3)'; }
-  const d = await api('/notify/test', { method: 'POST', body: JSON.stringify({ to }) }).catch(e => ({ error: e.message }));
-  if (status) {
-    status.textContent = d && d.ok ? t('notify.emailSentTo') + ' ' + to : t('common.error') + ' : ' + (d && d.reason ? d.reason : d && d.error ? d.error : 'unknown');
-    status.style.color = d && d.ok ? 'var(--green)' : 'var(--red)';
-  }
-}
+// notifyTestSmtp() : voir notify-form.js (test avec les valeurs du formulaire).
 
 function schedTab(tab) {
   ['sched','notif'].forEach(function(t) {
@@ -90,23 +76,19 @@ function schedTab(tab) {
   });
 }
 
-async function initScheduler() {
+// La page Scheduler (taches) est dans scheduler.js ; ici seul l'onglet
+// "Notifications" de cette page reste un editeur de fichier.
+async function schedLoadNotif() {
   const d = await api('/notify/config-files').catch(() => null);
-  if (!d) return;
-  var schedEl = document.getElementById('sched-sched-editor');
-  var notifEl = document.getElementById('sched-notif-editor');
-  if (schedEl && d.scheduler) schedEl.value = d.scheduler.content || '';
-  if (notifEl && d.notifications) notifEl.value = d.notifications.content || '';
+  const notifEl = document.getElementById('sched-notif-editor');
+  if (d && notifEl && d.notifications) notifEl.value = d.notifications.content || '';
 }
 
 async function schedSave(type) {
-  var map    = { sched: 'sched-sched-editor', notif: 'sched-notif-editor' };
-  var keyMap = { sched: 'scheduler', notif: 'notifications' };
-  var el = document.getElementById(map[type]);
+  if (type !== 'notif') return;
+  const el = document.getElementById('sched-notif-editor');
   if (!el) return;
-  var body = {};
-  body[keyMap[type]] = el.value;
-  var d = await api('/notify/config-files', { method: 'POST', body: JSON.stringify(body) }).catch(e => ({ error: e.message }));
+  const d = await api('/notify/config-files', { method: 'POST', body: JSON.stringify({ notifications: el.value }) }).catch(e => ({ error: e.message }));
   if (d && d.ok) alert(t('common.saveSuccess'));
   else alert(t('common.error') + ' : ' + (d && d.error ? d.error : 'unknown'));
 }

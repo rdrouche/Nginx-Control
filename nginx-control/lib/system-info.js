@@ -203,6 +203,41 @@ const ENTRIES = [
   { key: 'BRANDING_DOC', category: 'Branding', value: cfg.BRANDING.doc, default: '', override: ENV('BRANDING_DOC'),
     description: "Lien \"Documentation\" affiche dans le pied de menu. Ces reglages de marque (voir aussi BRANDING_KOFI, BRANDING_*_LABEL) sont surcharges au moment du BUILD (docker-compose.yml, section `build.args`), pas seulement a l execution." },
 
+  { key: 'BRANDING_DOC_LABEL', category: 'Branding', value: cfg.BRANDING.docLabel, default: 'Documentation', override: ENV('BRANDING_DOC_LABEL'),
+    description: "Libelle du lien documentation (voir BRANDING_DOC)." },
+  { key: 'BRANDING_SITE_LABEL', category: 'Branding', value: cfg.BRANDING.siteLabel, default: '', override: ENV('BRANDING_SITE_LABEL'),
+    description: "Libelle du lien vers le site (voir BRANDING_SITE)." },
+  { key: 'BRANDING_REPO_LABEL', category: 'Branding', value: cfg.BRANDING.repoLabel, default: 'Source repository', override: ENV('BRANDING_REPO_LABEL'),
+    description: "Libelle du lien vers le depot (voir BRANDING_REPO)." },
+  { key: 'BRANDING_KOFI', category: 'Branding', value: cfg.BRANDING.kofi, default: '', override: ENV('BRANDING_KOFI'),
+    description: "Lien de soutien (Ko-fi) affiche dans le pied de menu. Vide = masque." },
+  { key: 'BRANDING_KOFI_LABEL', category: 'Branding', value: cfg.BRANDING.kofiLabel, default: 'Support on Ko-fi', override: ENV('BRANDING_KOFI_LABEL'),
+    description: "Libelle du lien de soutien (voir BRANDING_KOFI)." },
+  { key: 'BRANDING_HEADER_TEXT', category: 'Branding', value: cfg.BRANDING.headerText, default: '', override: ENV('BRANDING_HEADER_TEXT'),
+    description: "Texte affiche dans l en-tete de l interface. Vide = aucun." },
+
+  // ─── Challenge navigateur (v12.64.0) ────────────────────────────────────
+  { key: 'CHALLENGE_DEFAULT_IMAGE', category: 'Challenge', value: cfg.CHALLENGE_DEFAULT_IMAGE, default: 'forge.rdr-it.com/dockerfiles/nginx-challenge:latest', override: ENV('CHALLENGE_DEFAULT_IMAGE'),
+    description: "Image par defaut du conteneur de challenge navigateur (moteur builtin) quand config/challenge.yml ne definit pas container_image. Injectee au build (ARG/ENV), surchargeable a l execution." },
+  { key: 'INSTANCE_ID', category: 'Général', value: cfg.INSTANCE_ID, default: 'UUID genere au 1er demarrage', override: ENV('INSTANCE_ID'),
+    description: "Identifiant unique et persistant de cette installation (UUID). Genere une seule fois et conserve dans config/.generated-secrets.json ; ENV INSTANCE_ID (UUID valide) prioritaire. Identifie l instance pour la future remontee d alertes (Nginx Control Intelligence) — n est pas un secret." },
+  { key: 'HTTP_USER_AGENT', category: 'Général', value: cfg.HTTP_USER_AGENT, default: 'NginxControl', override: ENV('HTTP_USER_AGENT'),
+    description: "User-Agent envoye par toutes les requetes HTTP sortantes de Nginx Control (listes de blocage, depots, webhooks, CrowdSec, hotes distants, git). Sans version, pour pouvoir le filtrer ou l exempter cote nginx (ex. challenge_exempt_ua_regex: '^NginxControl$')." },
+  { key: 'NC_SECRET', category: 'Challenge', sensitive: true, value: !!cfg.NC_SECRET, default: false, override: ENV('NC_SECRET'),
+    description: "Secret de signature du conteneur de challenge. Absent : genere au premier demarrage et conserve (comme SESSION_SECRET). Priorite ENV > config/challenge.yml (secret) > genere." },
+  { key: 'NC_DIFFICULTY_BITS', category: 'Challenge', value: cfg.NC_DIFFICULTY_BITS || 16, default: 16, override: ENV_OR_YAML('NC_DIFFICULTY_BITS', 'challenge.yml'),
+    description: "Difficulte de la preuve de travail (8-64 ; au-dela de ~30 un navigateur n aboutit plus). Priorite ENV > config/challenge.yml (difficulty_bits) > defaut." },
+  { key: 'NC_COOKIE_HOURS', category: 'Challenge', value: cfg.NC_COOKIE_HOURS || 24, default: 24, override: ENV_OR_YAML('NC_COOKIE_HOURS', 'challenge.yml'),
+    description: "Duree de validite du cookie \"navigateur verifie\" en heures (1-720). Priorite ENV > config/challenge.yml (cookie_hours) > defaut." },
+  { key: 'NC_GOODBOTS', category: 'Challenge', value: cfg.NC_GOODBOTS || 'true', default: 'true', override: ENV_OR_YAML('NC_GOODBOTS', 'challenge.yml'),
+    description: "Laisse passer les bons robots d indexation (DNS inverse confirmee) avec challenge-all-allowbots.conf. Priorite ENV > config/challenge.yml (goodbots) > defaut." },
+  { key: 'NC_GOODBOTS_EXTRA', category: 'Challenge', value: cfg.NC_GOODBOTS_EXTRA, default: '', override: ENV_OR_YAML('NC_GOODBOTS_EXTRA', 'challenge.yml'),
+    description: "Robots supplementaires nom|regex-UA|.suffixe[,.suffixe][;nom2|...]. Priorite ENV > config/challenge.yml (goodbots_extra) > vide." },
+  { key: 'NC_LANG', category: 'Challenge', value: cfg.NC_LANG || 'auto', default: 'auto', override: ENV_OR_YAML('NC_LANG', 'challenge.yml'),
+    description: "Langue de la page de verification du challenge : auto (langue du navigateur, anglais par defaut), fr ou en. Priorite ENV > config/challenge.yml (language) > auto." },
+  { key: 'ANUBIS_DEFAULT_IMAGE', category: 'Challenge', value: cfg.ANUBIS_DEFAULT_IMAGE, default: 'ghcr.io/techarohq/anubis:latest', override: ENV('ANUBIS_DEFAULT_IMAGE'),
+    description: "Image par defaut du conteneur Anubis (moteur anubis) quand config/challenge.yml ne definit pas container_image. Injectee au build (ARG/ENV), surchargeable a l execution." },
+
   // ─── Menu (v12.39.0, retour utilisateur) ───────────────────────────────
   // Valeurs par defaut ici ('auto'/'show') ; buildSystemInfo() les recalcule
   // a chaque requete avec le mode et la source (env/yaml/defaut) reellement
@@ -246,6 +281,7 @@ const YAML_BACKED_SETTINGS = [
   { file: 'certbot-dns.yml', purpose: "Defi DNS-01 (fournisseur, identifiants) — page SSL/Certbot" },
   { file: 'godns.yml', purpose: 'DNS dynamique — page GoDNS' },
   { file: 'geoipupdate.yml', purpose: 'Conteneur geoipupdate gere par le dashboard — page GeoIP' },
+  { file: 'challenge.yml', purpose: "Conteneur de challenge navigateur géré par le dashboard — page Blocklists" },
   { file: 'error-pages.yml', purpose: "Conteneur de pages d'erreur gere par le dashboard — page Pages d'erreur" },
   { file: 'crowdsec.yml', purpose: 'Reglages complementaires CrowdSec' },
   { file: 'git.yml', purpose: 'Configuration Git alternative geree depuis le dashboard' },
@@ -277,7 +313,7 @@ const INTENTIONALLY_OMITTED = new Set([
   'readGeneratedSecrets', 'persistGeneratedSecret', 'clearGeneratedSecret',
   'apiTokenActive', 'verifyApiToken', 'getWebhookSecret', 'isWebhookSecretConfigured',
   'SMTP_CONFIG_FILE', 'NOTIF_CONFIG_FILE', 'SCHED_CONFIG_FILE', 'CERTBOT_CONFIG_FILE',
-  'CERTBOT_DNS_CONFIG_FILE', 'GODNS_CONFIG_FILE', 'GEOIPUPDATE_CONFIG_FILE', 'ERROR_PAGES_CONFIG_FILE',
+  'CERTBOT_DNS_CONFIG_FILE', 'GODNS_CONFIG_FILE', 'GEOIPUPDATE_CONFIG_FILE', 'ERROR_PAGES_CONFIG_FILE', 'CHALLENGE_CONFIG_FILE',
   // MENU_CONFIG_FILE (v12.39.0) : chemin derive de CONFIG_DIR, comme les
   // autres *_CONFIG_FILE ci-dessus. Les reglages qu il contient (visibilite
   // WAF/GoDNS) sont documentes juste en dessous, comme des entrees a part

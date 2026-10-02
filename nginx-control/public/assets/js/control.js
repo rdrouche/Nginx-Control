@@ -103,3 +103,54 @@ async function nginxTestVerbose() {
     }
   }
 }
+
+/**
+ * "Tester en conteneur ephemere" : meme bac a sable que le test Git et que
+ * l ajout/edition de configuration (POST /api/nginx/test-ephemeral). Affiche la
+ * sortie COMPLETE (resume du montage + sortie de nginx -t) dans une carte
+ * dediee, succes comme echec.
+ */
+let nginxEphemeralBusy = false;
+async function nginxTestEphemeral() {
+  if (nginxEphemeralBusy) return;
+  nginxEphemeralBusy = true;
+  const crEl = document.getElementById('cr-test-ephemeral');
+  const card = document.getElementById('nginx-ephemeral-card');
+  const meta = document.getElementById('nginx-ephemeral-meta');
+  const out  = document.getElementById('nginx-ephemeral-output');
+  if (crEl) { crEl.className = 'cr show'; crEl.style.color = 'var(--text3)'; crEl.textContent = 'Conteneur éphémère en cours…'; }
+  if (card && out && meta) {
+    card.style.display = '';
+    meta.textContent = '';
+    out.className = 'verbose-dump';
+    out.textContent = 'Création du conteneur éphémère, copie de la configuration active et exécution de nginx -t…';
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  const d = await api('/nginx/test-ephemeral', { method: 'POST' }).catch(e => ({ ok: false, error: e.message }));
+  nginxEphemeralBusy = false;
+  const ran = !!d && d.ok === true;      // le bac a sable a tourne (valide ou non)
+  const valid = ran && d.valid === true;
+  if (crEl) {
+    crEl.className = 'cr show';
+    crEl.style.color = valid ? 'var(--green)' : 'var(--red)';
+    crEl.textContent = valid ? 'OK — configuration valide' : (ran ? 'ÉCHEC — configuration invalide' : 'ERREUR — test impossible');
+  }
+  if (card && out && meta) {
+    if (ran) {
+      meta.textContent = `exit code ${d.exitCode} · image ${d.image || '?'} · ${(d.durationMs / 1000).toFixed(1)} s`;
+      out.textContent = d.output || '(aucune sortie)';
+      out.className = 'verbose-dump' + (valid ? '' : ' error');
+    } else {
+      meta.textContent = '';
+      out.textContent = 'Le test éphémère n\'a pas pu s\'exécuter : ' + ((d && d.error) || 'réponse invalide ou agent injoignable');
+      out.className = 'verbose-dump error';
+    }
+  }
+  ctrlLogs.unshift({ ts: new Date().toLocaleTimeString('fr'), action: 'test-ephemeral', ok: valid });
+  document.getElementById('ctrl-log').innerHTML = ctrlLogs.slice(0, 10).map(l => `
+    <div class="le ${l.ok ? 'lrld' : 'lerr'}">
+      <span class="lt">${l.ts}</span>
+      <span class="lty" style="color:${l.ok ? 'var(--green)' : 'var(--red)'}">${l.action}</span>
+      <span class="ld">${l.ok ? '✓ Succès' : '✗ Erreur'}</span>
+    </div>`).join('');
+}

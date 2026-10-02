@@ -13,6 +13,7 @@
 
 const http  = require('http');
 const https = require('https');
+const cfg   = require('./config');
 
 const TIMEOUT_MS   = 15_000;
 const MAX_BYTES     = 25 * 1024 * 1024; // 25MB — generous for an IP list, small enough to bound memory/time
@@ -27,7 +28,7 @@ function fetchBlocklistText(url) {
     const proto = u.protocol === 'https:' ? https : http;
     const req = proto.request(Object.assign(new URL(url), {
       method: 'GET',
-      headers: { 'User-Agent': 'nginx-dashboard-blocklists' },
+      headers: { 'User-Agent': cfg.HTTP_USER_AGENT },
       timeout: TIMEOUT_MS,
     }), (res) => {
       if (res.statusCode !== 200) {

@@ -7,6 +7,9 @@
 enable: false
 
 container_image: forge.rdr-it.com/dockerfiles/nginx-analyzer:latest
+# Portage Go (v12.52.0, ~40 % de RAM en moins, meme API, meme base SQLite) :
+# publier l image construite depuis nginx-analyzer-go/ et pointer ici. Retour
+# arriere = remettre l image Node. Voir nginx-analyzer-go/README.md.
 container_name: ngx-analyzer
 port: 9100
 
@@ -35,6 +38,12 @@ log_pattern: (^|[._])access\.log$
 bruteforce_min_failures: 15
 scan_min_requests: 40
 flood_min_requests: 600
+
+# Codes HTTP ignores par TOUTES les regles et la baseline : une requete deja
+# refusee par un autre mecanisme (ex. blocklist en "444") ne declenche plus
+# d alerte. Elles restent comptees dans les statistiques et les hits de blocklist.
+# Liste separee par des virgules, ex. "444" ou "444,403". Vide = aucun.
+ignore_status: ""
 
 # ── Detection volumetrique (necessite un apprentissage) ──────────────────────
 # Comptez trois semaines avant la premiere alerte fiable : la reference est

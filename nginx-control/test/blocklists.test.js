@@ -245,6 +245,25 @@ const check = (n, f) => { try { f(); console.log('  PASS  ' + n); pass++; }
     assert.deepStrictEqual(r.sources, []);
   });
 
+  console.log('\ngetExportableIps() — telecharger/visualiser une liste par source, ou fusionnee');
+  check('source nommee -> uniquement les IP de cette source', () => {
+    const r = B.getExportableIps('source-a');
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.type, 'url');
+    assert.deepStrictEqual(r.ips, ['1.2.3.4', '5.6.7.0/24', '9.9.9.9'].sort());
+  });
+  check('"all" (ou omis) -> fusion des sources activees, triee, sans doublon', () => {
+    const r1 = B.getExportableIps('all');
+    const r2 = B.getExportableIps();
+    assert.deepStrictEqual(r1.ips, r2.ips);
+    assert.deepStrictEqual(r1.ips, [...new Set(r1.ips)].sort());
+  });
+  check('source inconnue -> erreur explicite, jamais d exception', () => {
+    const r = B.getExportableIps('n-existe-pas');
+    assert.strictEqual(r.ok, false);
+    assert.ok(/inconnue/.test(r.error));
+  });
+
   console.log('\ngetHitStats() / getDigestStats() — degradent proprement sans analyseur, relaient sinon');
   let hitStats = await B.getHitStats({ hours: 24 });
   check('sans analyzerApi injecte -> available: false, jamais d exception', () => {
@@ -340,6 +359,268 @@ const check = (n, f) => { try { f(); console.log('  PASS  ' + n); pass++; }
     'enable: true', 'sources:',
     `  - name: source-a`, `    url: "http://127.0.0.1:${port}/a.txt"`, '    enable: true',
   ].join('\n'));
+
+  console.log('\nsource "analyzer" — liste generee depuis les regles Analyse (v12.49.4, redesign par regle v12.50.0)');
+  const { listNotifications } = require('../lib/notifications');
+
+  // Fabrique un lot d alertes /api/alerts : N alertes d un type de regle
+  // donne pour une IP (et, en option, un vhost — pour le test du "no
+  // remediation" par vhost).
+  function fakeAlerts(spec) {
+    const alerts = [];
+    let id = 1;
+    for (const { ip, count, type, vhost } of spec) {
+      for (let i = 0; i < count; i++) alerts.push({ id: id++, ip, type: type || 'flood', vhost: vhost || null, ts: Date.now() });
+    }
+    return alerts;
+  }
+
+  /** Mock analyzerApi(path) qui repond differemment selon l endpoint interroge. */
+  function mockAnalyzerApi({ rules = [], alerts = [] } = {}) {
+    return async (pathAndQuery) => {
+      if (pathAndQuery.startsWith('/api/rules/blocklist-config')) {
+        return { status: 200, data: { rules } };
+      }
+      if (pathAndQuery.startsWith('/api/alerts')) {
+        return { status: 200, data: { alerts } };
+      }
+      return { status: 404, data: null };
+    };
+  }
+
+  console.log('\ncomputeAnalyzerBlocklist() — comptage/seuil par regle');
+  B.setDeps({
+    buildVhostRulesMap: () => ({}),
+    analyzerApi: mockAnalyzerApi({
+      rules: [{ id: 3, key: 'flood', name: 'flood', threshold: 5, windowMinutes: 1440, remediation: false, remediationMinutes: null }],
+      alerts: fakeAlerts([
+        { ip: '10.0.0.1', count: 5, type: 'flood' },
+        { ip: '10.0.0.2', count: 2, type: 'flood' },
+      ]),
+    }),
+  });
+  let r = await B.computeAnalyzerBlocklist();
+  check('une IP atteignant le seuil de sa regle est retenue, une autre en dessous ne l est pas', () => {
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(r.detectedIps, ['10.0.0.1']);
+  });
+  check('remediation:false sur la regle -> aucune IP a bloquer, meme detectee', () => {
+    assert.deepStrictEqual(r.ips, []);
+  });
+
+  B.setDeps({
+    buildVhostRulesMap: () => ({}),
+    analyzerApi: mockAnalyzerApi({ rules: [], alerts: [] }),
+  });
+  r = await B.computeAnalyzerBlocklist();
+  check('aucune regle opt-in (threshold configure) -> liste vide, jamais une exception', () => {
+    assert.deepStrictEqual(r.detectedIps, []);
+    assert.deepStrictEqual(r.ips, []);
+  });
+
+  B.setDeps({ buildVhostRulesMap: () => ({}), analyzerApi: async () => null }); // analyseur injoignable
+  r = await B.computeAnalyzerBlocklist();
+  check('analyseur injoignable (/api/rules/blocklist-config) -> ok:false explicite, jamais d exception', () => {
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error);
+  });
+
+  console.log('\ncomputeAnalyzerBlocklist() — vhost "# nginx-control-analyze-no-remediation: on"');
+  B.setDeps({
+    buildVhostRulesMap: () => ({ 'exempt.example.org': { enabled: true, ignore: [], noRemediation: true } }),
+    analyzerApi: mockAnalyzerApi({
+      rules: [{ id: 3, key: 'flood', name: 'flood', threshold: 3, windowMinutes: 1440, remediation: true, remediationMinutes: null }],
+      alerts: fakeAlerts([{ ip: '198.51.100.5', count: 5, type: 'flood', vhost: 'exempt.example.org' }]),
+    }),
+  });
+  r = await B.computeAnalyzerBlocklist();
+  check('les occurrences d un vhost exempte ne comptent jamais dans le seuil (alerte gardee cote analyseur, jamais ici)', () => {
+    assert.deepStrictEqual(r.detectedIps, []);
+    assert.deepStrictEqual(r.ips, []);
+  });
+
+  console.log('\ncomputeAnalyzerBlocklist() — alerte de campagne (regle personnalisee scope: global)');
+  const campaignAlert = (over = {}) => ({
+    id: 1, ts: Date.now(), type: 'custom_120', ip: null, vhost: 'forge.example.org',
+    evidence: { campaign: true, vhosts: ['forge.example.org'], ips: [['203.0.113.1', 1], ['203.0.113.2', 3], ['not-an-ip', 1]] },
+    ...over,
+  });
+  const campRule = { id: 120, key: 'custom_120', name: 'forgejo', threshold: 1, windowMinutes: 1440, remediation: true, remediationMinutes: null };
+  B.setDeps({ buildVhostRulesMap: () => ({}), analyzerApi: mockAnalyzerApi({ rules: [campRule], alerts: [campaignAlert()] }) });
+  r = await B.computeAnalyzerBlocklist();
+  check('une alerte de campagne (sans ip) alimente la blocklist avec chaque IP listee (valeurs invalides ecartees)', () => {
+    assert.deepStrictEqual([...r.detectedIps].sort(), ['203.0.113.1', '203.0.113.2']);
+    assert.deepStrictEqual([...r.ips].sort(), ['203.0.113.1', '203.0.113.2']);
+  });
+  B.setDeps({
+    buildVhostRulesMap: () => ({ 'forge.example.org': { enabled: true, ignore: [], noRemediation: true } }),
+    analyzerApi: mockAnalyzerApi({ rules: [campRule], alerts: [campaignAlert()] }),
+  });
+  r = await B.computeAnalyzerBlocklist();
+  check('campagne touchant un vhost no-remediation : aucune IP retenue', () => {
+    assert.deepStrictEqual(r.detectedIps, []);
+    assert.deepStrictEqual(r.ips, []);
+  });
+  B.setDeps({ buildVhostRulesMap: () => ({}), analyzerApi: mockAnalyzerApi({ rules: [campRule], alerts: [campaignAlert({ evidence: { ips: [['203.0.113.9', 1]] } })] }) });
+  r = await B.computeAnalyzerBlocklist();
+  check('une alerte sans ip ET sans evidence.campaign reste ignoree (ex. country_traffic)', () => {
+    assert.deepStrictEqual(r.detectedIps, []);
+  });
+
+  console.log('\ncomputeAnalyzerBlocklist() — remediationType "challenge" (v12.63.0)');
+  const chRules = [
+    { id: 3, key: 'flood', name: 'flood', threshold: 2, windowMinutes: 1440, remediation: true, remediationMinutes: null, remediationType: 'challenge' },
+    { id: 2, key: 'scan', name: 'scan', threshold: 2, windowMinutes: 1440, remediation: true, remediationMinutes: null, remediationType: 'block' },
+  ];
+  const chAlerts = fakeAlerts([
+    { ip: '192.0.2.10', count: 3, type: 'flood' },
+    { ip: '192.0.2.11', count: 3, type: 'flood' }, { ip: '192.0.2.11', count: 3, type: 'scan' },
+    { ip: '192.0.2.12', count: 1, type: 'flood' },
+  ]);
+  B.setDeps({ buildVhostRulesMap: () => ({}), analyzerApi: mockAnalyzerApi({ rules: chRules, alerts: chAlerts }) });
+  r = await B.computeAnalyzerBlocklist();
+  check('une regle "challenge" produit challengeIps, jamais ips ; le blocage l emporte sur le challenge', () => {
+    assert.deepStrictEqual(r.ips, ['192.0.2.11']);
+    assert.deepStrictEqual(r.challengeIps, ['192.0.2.10']);
+    assert.ok(r.detectedIps.includes('192.0.2.10'));
+    assert.strictEqual(r.byRule.find(x => x.key === 'flood').remediationType, 'challenge');
+  });
+
+  console.log('\nrefreshBlocklists() — challenge active : fichiers nginx generes');
+  writeBlocklistsYaml(['enable: true', 'challenge_enable: true', 'sources:', '  - name: analyzer-auto', '    type: analyzer'].join('\n'));
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  check('la table $blocklist_challenge contient l IP challengee, pas l IP bloquee ; le snippet est actif', () => {
+    const chal = fs.readFileSync(B.CHALLENGE_FILE, 'utf8');
+    assert.ok(/geo \$blocklist_challenge/.test(chal) && chal.includes('192.0.2.10 1;') && !chal.includes('192.0.2.11'));
+    assert.ok(fs.readFileSync(B.GEO_FILE, 'utf8').includes('192.0.2.11 1;'));
+    assert.ok(!fs.readFileSync(B.GEO_FILE, 'utf8').includes('192.0.2.10'));
+    assert.ok(/auth_request \/_nc_gate;/.test(fs.readFileSync(B.GATE_FILE, 'utf8')));
+    assert.strictEqual(status.challengeIps, 1);
+  });
+  check('getBlocklistStatus() et checkIp() exposent le challenge', () => {
+    const st = B.getBlocklistStatus();
+    assert.strictEqual(st.challenge.enable, true);
+    assert.strictEqual(st.challenge.ips, 1);
+    assert.strictEqual(B.checkIp('192.0.2.10').challenged, true);
+    assert.strictEqual(B.checkIp('192.0.2.11').challenged, false);
+  });
+  writeBlocklistsYaml(['enable: true', 'sources:', '  - name: analyzer-auto', '    type: analyzer'].join('\n'));
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  check('challenge desactive : IP detectees mais aucune ecrite pour nginx, snippet sans directive', () => {
+    assert.ok(!fs.readFileSync(B.CHALLENGE_FILE, 'utf8').includes('192.0.2.10'));
+    assert.ok(!/auth_request/.test(fs.readFileSync(B.GATE_FILE, 'utf8').replace(/^#.*$/gm, '')));
+    assert.strictEqual(status.challengeIps, 0);
+  });
+  let rolled = false;
+  const prevExec = docker.execNginx;
+  writeBlocklistsYaml(['enable: true', 'challenge_enable: true', 'sources:', '  - name: analyzer-auto', '    type: analyzer'].join('\n'));
+  docker.execNginx = async (cmd) => { if (cmd === 'nginx -t') { rolled = true; const e = new Error('boom'); e.stderr = 'bad'; throw e; } return { stdout: 'ok', stderr: '' }; };
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  docker.execNginx = prevExec;
+  check('nginx -t en echec : les fichiers challenge sont restaures (retour arriere)', () => {
+    assert.ok(rolled && status.testFailed === true);
+    assert.ok(!fs.readFileSync(B.CHALLENGE_FILE, 'utf8').includes('192.0.2.10'));
+    assert.ok(!/auth_request \/_nc_gate/.test(fs.readFileSync(B.GATE_FILE, 'utf8').replace(/^#.*$/gm, '')));
+  });
+
+  console.log('\nrefreshBlocklists() — remediation: false (defaut) : liste calculee mais jamais appliquee');
+  B.setDeps({
+    buildVhostRulesMap: () => ({}),
+    analyzerApi: mockAnalyzerApi({
+      rules: [{ id: 3, key: 'flood', name: 'flood', threshold: 5, windowMinutes: 1440, remediation: false, remediationMinutes: null }],
+      alerts: fakeAlerts([{ ip: '198.51.100.9', count: 9, type: 'flood' }]),
+    }),
+  });
+  writeBlocklistsYaml([
+    'enable: true',
+    'sources:',
+    `  - name: source-a`, `    url: "http://127.0.0.1:${port}/a.txt"`, '    enable: true',
+    `  - name: analyzer-auto`, '    type: analyzer',
+  ].join('\n'));
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  check('la source analyzer est tentee avec succes', () => {
+    const a = status.sources.find(s => s.name === 'analyzer-auto');
+    assert.strictEqual(a.ok, true);
+    assert.strictEqual(a.detectedCount, 1);
+    assert.strictEqual(a.count, 0, 'remediation:false sur la regle -> count applique reste a 0');
+  });
+  check('l IP detectee ne rejoint PAS le snippet geo (aucun blocage sans remediation explicite)', () => {
+    const geo = fs.readFileSync(B.GEO_FILE, 'utf8');
+    assert.ok(!geo.includes('198.51.100.9'));
+  });
+  let st2 = B.getBlocklistStatus();
+  check('getBlocklistStatus() expose detectedCount/byRule pour la source analyzer (plus threshold/remediation, deplaces par regle)', () => {
+    const a = st2.sources.find(s => s.name === 'analyzer-auto');
+    assert.strictEqual(a.type, 'analyzer');
+    assert.strictEqual(a.detectedCount, 1);
+    assert.strictEqual(a.count, 0);
+    assert.ok(Array.isArray(a.byRule) && a.byRule.length === 1);
+  });
+  check('une notification informe de la detection meme sans remediation', () => {
+    const notifs = listNotifications({ type: 'blocklist_analyzer_detected' });
+    assert.ok(notifs.length >= 1);
+  });
+
+  console.log('\nrefreshBlocklists() — remediation: true (au niveau de la regle) : la liste rejoint reellement le blocage');
+  B.setDeps({
+    buildVhostRulesMap: () => ({}),
+    analyzerApi: mockAnalyzerApi({
+      rules: [{ id: 3, key: 'flood', name: 'flood', threshold: 5, windowMinutes: 1440, remediation: true, remediationMinutes: null }],
+      alerts: fakeAlerts([{ ip: '198.51.100.9', count: 9, type: 'flood' }]),
+    }),
+  });
+  writeBlocklistsYaml([
+    'enable: true',
+    'sources:',
+    `  - name: analyzer-auto`, '    type: analyzer',
+  ].join('\n'));
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  check('remediation:true sur la regle -> l IP detectee est comptee ET appliquee', () => {
+    const a = status.sources.find(s => s.name === 'analyzer-auto');
+    assert.strictEqual(a.count, 1);
+  });
+  check('l IP detectee rejoint bien le snippet geo cette fois', () => {
+    const geo = fs.readFileSync(B.GEO_FILE, 'utf8');
+    assert.ok(geo.includes('198.51.100.9 1;'));
+  });
+  check('totalUniqueIps compte desormais l IP issue de l analyseur', () => {
+    const st3 = B.getBlocklistStatus();
+    assert.ok(st3.totalUniqueIps >= 1);
+  });
+
+  console.log('\nrefreshBlocklists() — liste blanche : une IP whitelistee n est jamais bloquee, meme via l analyseur');
+  writeBlocklistsYaml([
+    'enable: true',
+    'whitelist:', '  - "198.51.100.9"',
+    'sources:',
+    `  - name: analyzer-auto`, '    type: analyzer',
+  ].join('\n'));
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  check('l IP whitelistee est retiree du merge final malgre remediation:true sur la regle', () => {
+    const geo = fs.readFileSync(B.GEO_FILE, 'utf8');
+    assert.ok(!geo.includes('198.51.100.9'));
+    assert.strictEqual(status.whitelistedCount, 1);
+  });
+
+  console.log('\nrefreshBlocklists() — source analyzer, analyseur injoignable : degrade sans casser le cycle');
+  B.setDeps({ buildVhostRulesMap: () => ({}), analyzerApi: async () => null });
+  writeBlocklistsYaml([
+    'enable: true',
+    'sources:',
+    `  - name: analyzer-auto`, '    type: analyzer',
+  ].join('\n'));
+  status = await B.refreshBlocklists({ manual: true, actor: 'test' });
+  check('la source analyzer est rapportee en echec, sans exception, le reste du cycle continue', () => {
+    const a = status.sources.find(s => s.name === 'analyzer-auto');
+    assert.strictEqual(a.ok, false);
+    assert.ok(a.error);
+  });
+  B.setDeps({ analyzerApi: null, analyzerApiJson: null, buildVhostRulesMap: null }); // ne pas polluer les tests suivants
+  writeBlocklistsYaml([
+    'enable: true', 'sources:',
+    `  - name: source-a`, `    url: "http://127.0.0.1:${port}/a.txt"`, '    enable: true',
+  ].join('\n'));
+  await B.refreshBlocklists({ manual: true, actor: 'test' });
 
   server.close();
   fs.rmSync(dir, { recursive: true, force: true });

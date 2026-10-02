@@ -40,7 +40,7 @@ const int = (name, fallback) => {
 // ne sert qu en dehors d un conteneur construit par ce Dockerfile (tests
 // locaux, `node server.js` execute directement) — l ARG du Dockerfile a lui
 // meme deja son propre defaut ("dev") pour un build sans --build-arg.
-const VERSION = str('APP_VERSION', '12.49.3');
+const VERSION = str('APP_VERSION', '12.68.0');
 
 // ─── Core ────────────────────────────────────────────────────────────────────
 const PORT            = int('PORT', 3000);
@@ -142,6 +142,28 @@ const SESSION_SECRET = sessionSecretResolved.value;
 if (sessionSecretResolved.isNew) {
   console.log(`[config] SESSION_SECRET n'est pas definie : une valeur aleatoire a ete generee et enregistree dans ${GENERATED_SECRETS_FILE} — les sessions resteront valides d'un redemarrage a l'autre. Pour la choisir vous-meme, definissez SESSION_SECRET dans .env (ex. \`openssl rand -hex 32\`) : elle sera alors toujours prioritaire sur la valeur generee.`);
 }
+// v12.67.1 : identifiant unique et PERSISTANT de cette installation (UUID v4),
+// prerequis de la future remontee d alertes vers « Nginx Control Intelligence »
+// (mode anonyme ou authentifie). Priorite ENV INSTANCE_ID (UUID valide) > valeur
+// persistee dans config/.generated-secrets.json > generee au premier demarrage.
+// Ce n est PAS un secret (il identifie l instance) : ne jamais l utiliser comme preuve d identite.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INSTANCE_ID = (() => {
+  const env = str('INSTANCE_ID');
+  if (env) {
+    if (UUID_RE.test(env)) return env.toLowerCase();
+    console.warn('[config] INSTANCE_ID ignoree : un UUID est attendu (ex. 3f2b8c1e-9d4a-4e6b-8a57-1c2d3e4f5a6b).');
+  }
+  const stored = readGeneratedSecrets().instanceId;
+  if (typeof stored === 'string' && UUID_RE.test(stored)) return stored.toLowerCase();
+  const id = crypto.randomUUID();
+  // Repertoire de config absent : on ne le cree PAS ici (le diagnostic de demarrage doit
+  // pouvoir le signaler) — l ID reste alors ephemere jusqu a ce que le repertoire existe.
+  if (!require('fs').existsSync(CONFIG_DIR)) return id;
+  persistGeneratedSecret('instanceId', id);
+  console.log(`[config] Identifiant d'instance genere et enregistre dans ${GENERATED_SECRETS_FILE} : ${id}`);
+  return id;
+})();
 const SESSION_TTL_MS = int('SESSION_TTL_HOURS', 8) * 3600_000;
 // Sliding TTL keeps active users signed in; the absolute cap bounds how long a
 // stolen cookie stays useful.
@@ -403,6 +425,30 @@ const DIR_GEOIP = str('DIR_GEOIP', '/geoip');
 const GEOIPUPDATE_CONFIG_FILE = path.join(CONFIG_DIR, 'geoipupdate.yml');
 const ERROR_PAGES_CONFIG_FILE = path.join(CONFIG_DIR, 'error-pages.yml');
 
+// Conteneur du challenge navigateur (v12.63.0, features/challenge-container.js).
+// Images par defaut injectees via ARG/ENV du Dockerfile (--build-arg) et
+// surchargeables a l execution, comme ANALYZER_DEFAULT_IMAGE ci-dessus ; une
+// image fixee dans config/challenge.yml (container_image) reste prioritaire.
+const CHALLENGE_CONFIG_FILE = path.join(CONFIG_DIR, 'challenge.yml');
+const CHALLENGE_DEFAULT_IMAGE = str('CHALLENGE_DEFAULT_IMAGE', 'forge.rdr-it.com/dockerfiles/nginx-challenge:latest');
+// User-Agent de TOUTES les requetes HTTP sortantes de Nginx Control (listes, depots,
+// webhooks, LAPI, hotes distants, git...) : un seul nom, sans version, pour pouvoir
+// le filtrer ou l exempter cote nginx (ex. challenge_exempt_ua_regex: '^NginxControl$').
+const HTTP_USER_AGENT = (() => {
+  const v = str('HTTP_USER_AGENT', 'NginxControl');
+  return /^[A-Za-z0-9._\/-]{1,60}$/.test(v) ? v : 'NginxControl';
+})();
+const ANUBIS_DEFAULT_IMAGE = str('ANUBIS_DEFAULT_IMAGE', 'ghcr.io/techarohq/anubis:latest');
+// Reglages du conteneur de challenge (v12.64.0). Priorite : ENV > config/challenge.yml > defaut.
+// Chaines brutes, validees par lib/challenge-container.js#applyEnv. NC_SECRET absent :
+// genere et conserve dans .generated-secrets.json (comme SESSION_SECRET), cf. features/challenge-container.js.
+const NC_SECRET = str('NC_SECRET');
+const NC_DIFFICULTY_BITS = str('NC_DIFFICULTY_BITS');
+const NC_COOKIE_HOURS = str('NC_COOKIE_HOURS');
+const NC_GOODBOTS = str('NC_GOODBOTS');
+const NC_GOODBOTS_EXTRA = str('NC_GOODBOTS_EXTRA');
+const NC_LANG = str('NC_LANG');
+
 // ─── CrowdSec ────────────────────────────────────────────────────────────────
 const CROWDSEC_URL        = str('CROWDSEC_URL');
 const CROWDSEC_API_KEY    = str('CROWDSEC_API_KEY');
@@ -509,7 +555,7 @@ module.exports = Object.freeze({
   VERSION,
   PORT, NGINX_VTS_URL, NGINX_CONTAINER, NGINX_IMAGE, NGINX_CONF_FILE, NGINX_NETWORK,
   TRUSTED_PROXIES, NOTIF_POLL_INTERVAL_SEC,
-  SESSION_SECRET, SESSION_TTL_MS, SESSION_ABSOLUTE_MAX_MS, GENERATED_SECRETS_FILE,
+  INSTANCE_ID, SESSION_SECRET, SESSION_TTL_MS, SESSION_ABSOLUTE_MAX_MS, GENERATED_SECRETS_FILE,
   API_TOKEN, API_TOKEN_ENABLED, WEBHOOK_SECRET, WEBHOOK_SECRET_SET,
   readGeneratedSecrets, persistGeneratedSecret, clearGeneratedSecret,
   apiTokenActive, verifyApiToken, getWebhookSecret, isWebhookSecretConfigured,
@@ -524,7 +570,8 @@ module.exports = Object.freeze({
   DIR_SITES, DIR_CONF, DIR_SNIPPETS, DIR_STREAMS, DIR_SSL, DIR_CERTS, DIR_LOGS,
   DIR_CACHE, DIR_BACKUPS, DIR_GIT_WORK, HOST_LOGS, HOST_GOACCESS,
   GIT_REPO_URL, GIT_BRANCH, GIT_BACKUP_BRANCH, GIT_SSH_KEY, GIT_TOKEN,
-  GIT_USER_NAME, GIT_USER_EMAIL, GIT_CONFIG_FILE, BLOCKLIST_CONFIG_FILE, DEPLOY_TOKENS_FILE,
+  GIT_USER_NAME, GIT_USER_EMAIL, GIT_CONFIG_FILE, BLOCKLIST_CONFIG_FILE, DEPLOY_TOKENS_FILE, CHALLENGE_CONFIG_FILE, CHALLENGE_DEFAULT_IMAGE, ANUBIS_DEFAULT_IMAGE, HTTP_USER_AGENT,
+  NC_SECRET, NC_DIFFICULTY_BITS, NC_COOKIE_HOURS, NC_GOODBOTS, NC_GOODBOTS_EXTRA, NC_LANG,
   DOCKER_AUTOCONFIG_CONFIG_FILE, AGENTS_CONFIG_FILE, BACKUP_KEEP,
   ALLOW_EDIT, ALLOW_CREATE, DEPLOY_SYNC_SSL,
   DOCKER_SOCKET, GEOIP_CITY_DB, GEOIP_COUNTRY_DB, GEOIP_ASN_DB, DIR_GEOIP,

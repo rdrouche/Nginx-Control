@@ -389,6 +389,7 @@ console.log('\nparseVhostFile() — opt-out d analyse par bloc (# nginx-control-
   check('bloc sans flag -> analyzeEnabled: true, aucune regle ignoree (comportement par defaut)', () => {
     assert.strictEqual(blocks[0].analyzeEnabled, true);
     assert.deepStrictEqual(blocks[0].analyzeIgnoreRuleIds, []);
+    assert.strictEqual(blocks[0].analyzeNoRemediation, false);
   });
   check('bloc avec # nginx-control-analyze: off -> analyzeEnabled: false', () => {
     assert.strictEqual(blocks[1].analyzeEnabled, false);
@@ -396,6 +397,20 @@ console.log('\nparseVhostFile() — opt-out d analyse par bloc (# nginx-control-
   check('# nginx-control-analyze-ignore-rules: 1, 2, 4 -> liste d ids numeriques, vhost reste actif', () => {
     assert.strictEqual(blocks[2].analyzeEnabled, true);
     assert.deepStrictEqual(blocks[2].analyzeIgnoreRuleIds, [1, 2, 4]);
+  });
+
+  const noRemediationBlocks = parseVhostFile([
+    'server {',
+    '    # nginx-control-analyze-no-remediation: on',
+    '    listen 8445 ssl;',
+    '    server_name e.internal;',
+    '    location / { proxy_pass http://10.0.0.4:8080; }',
+    '}',
+  ].join('\n'), {});
+  check('# nginx-control-analyze-no-remediation: on -> analyzeNoRemediation: true, alertes/analyse inchangees', () => {
+    assert.strictEqual(noRemediationBlocks[0].analyzeNoRemediation, true);
+    assert.strictEqual(noRemediationBlocks[0].analyzeEnabled, true);
+    assert.deepStrictEqual(noRemediationBlocks[0].analyzeIgnoreRuleIds, []);
   });
 
   const inText = parseVhostFile([

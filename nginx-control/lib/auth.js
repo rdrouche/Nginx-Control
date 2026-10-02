@@ -61,6 +61,10 @@ const ROLE_PERMS = {
   // checks session.agentScope/session.agentId directly rather than any
   // PERMS bit — this empty list is belt-and-suspenders, not the mechanism.
   agent: [],
+  // Jeton de synchronisation de certificats (lib/certsync-store.js) : aucune
+  // permission ; le confinement est la liste fixe CERTSYNC_TOKEN_ROUTES de
+  // server.js et le contrôle de portée dans features/certsync.js.
+  certsync: [],
 };
 
 function roleHasPerm(role, perm) {
@@ -648,6 +652,19 @@ function authenticateAgentToken(req) {
 }
 
 /**
+ * Jeton de synchronisation de certificats (v12.59.0) : role 'certsync', zero
+ * permission. Mêmes règles de confinement que les deux fonctions ci-dessus —
+ * à n'appeler que pour les trois routes de server.js#CERTSYNC_TOKEN_ROUTES.
+ */
+function authenticateCertsyncToken(req) {
+  const auth = req.headers['authorization'] || '';
+  if (!auth.startsWith('Bearer ')) return null;
+  const t = require('./certsync-store').findByToken(auth.slice(7));
+  if (!t) return null;
+  return { username: `certsync:${t.name}`, role: 'certsync', name: t.name, certsyncScope: true, certsyncTokenId: t.id };
+}
+
+/**
  * Whether `session` is allowed to perform `action` (one of
  * lib/deploy-tokens.js's ACTIONS: pull/test/deploy/backup). Always true for
  * an ordinary session (cookie login or the global API_TOKEN) — the
@@ -696,6 +713,6 @@ module.exports = {
   parseCookies, setCookieHeader, clearCookieHeader, isRequestHttps,
   loginOriginAllowed,
   getTokenFromReq, getSessionFromReq, requireSession, requireApiAuth,
-  authenticateQueryToken, authenticateDeployToken, deployTokenAllows, authenticateAgentToken,
+  authenticateQueryToken, authenticateDeployToken, deployTokenAllows, authenticateAgentToken, authenticateCertsyncToken,
   setEventLogger, setSessionStore, persistSessions, startCleanupTimers,
 };

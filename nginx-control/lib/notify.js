@@ -39,6 +39,14 @@ let schedCfg = null;
 // the cron string plus a stray quote plus the whole comment glued onto it).
 // Every other flat-YAML loader in the project shares that same fix now.
 
+/** Valeur entre guillemets = chaine (un mot de passe "0123" ne devient pas 123) ; true/false restent booleens. */
+function scalar(rawStripped) {
+  const first = rawStripped[0];
+  const quoted = rawStripped.length >= 2 && (first === '"' || first === "'") && rawStripped.endsWith(first);
+  const v = rawStripped.replace(/^["']|["']$/g, '');
+  return quoted && v !== 'true' && v !== 'false' ? v : coerceYmlValue(v);
+}
+
 function parseYmlFlat(filePath) {
   if (!fs.existsSync(filePath)) return null;
   try {
@@ -62,12 +70,13 @@ function parseYmlFlat(filePath) {
         continue;
       }
       const [, key, val] = kv;
-      const cleanVal = stripInlineComment(val).replace(/^["']|["']$/g, '');
+      const rawVal   = stripInlineComment(val);
+      const cleanVal = rawVal.replace(/^["']|["']$/g, '');
       if (indent === 0) {
         currentSection = key;
         currentSubKey  = null;
         if (cleanVal !== '') {
-          result[key] = coerceYmlValue(cleanVal);
+          result[key] = scalar(rawVal);
           currentSection = null;
         } else {
           result[key] = result[key] || {};
@@ -76,7 +85,7 @@ function parseYmlFlat(filePath) {
         currentSubKey = key;
         if (cleanVal !== '') {
           if (!result[currentSection]) result[currentSection] = {};
-          result[currentSection][key] = coerceYmlValue(cleanVal);
+          result[currentSection][key] = scalar(rawVal);
         } else {
           if (!result[currentSection]) result[currentSection] = {};
           result[currentSection][key] = result[currentSection][key] || [];
@@ -90,14 +99,35 @@ function parseYmlFlat(filePath) {
   }
 }
 
-function loadSmtpConfig()  { smtpCfg  = parseYmlFlat(SMTP_CONFIG_FILE);  return smtpCfg; }
+/**
+ * Valeurs texte de smtp.yml : une cle vide (`username:`) est lue comme une
+ * section vide `{}` par le chargeur generique — ce n'est pas une valeur
+ * (« [object Object] » affiche puis reenregistre comme identifiant, et mot de
+ * passe « present » alors qu'il n'y en a pas). Le masque d'affichage
+ * « ******** » (et l'ancien « [object Object] » ecrit par cette erreur) ne
+ * sont pas non plus des valeurs : ramenes a vide, ce qui desactive AUTH.
+ */
+const SMTP_TEXT_KEYS = ['host', 'security', 'from', 'from_name', 'username', 'password'];
+function normalizeSmtp(c) {
+  if (!c) return c;
+  for (const k of SMTP_TEXT_KEYS) {
+    const v = c[k];
+    if (v === undefined) continue;
+    if (v === null || typeof v === 'object' || v === '********' || v === '[object Object]') c[k] = '';
+  }
+  return c;
+}
+
+function loadSmtpConfig()  { smtpCfg  = normalizeSmtp(parseYmlFlat(SMTP_CONFIG_FILE));  return smtpCfg; }
 
 function loadNotifConfig() { notifCfg = parseYmlFlat(NOTIF_CONFIG_FILE); return notifCfg; }
 
 function loadSchedConfig() { schedCfg = parseYmlFlat(SCHED_CONFIG_FILE); return schedCfg; }
 
-async function sendMail(to, subject, body) {
-  const cfg = smtpCfg || loadSmtpConfig();
+async function sendMail(to, subject, body, cfgOverride) {
+  // cfgOverride : configuration SMTP explicite (test depuis le formulaire,
+  // sans l'enregistrer) ; sinon fichier smtp.yml.
+  const cfg = cfgOverride || smtpCfg || loadSmtpConfig();
   if (!cfg || !cfg.enable) return { ok: false, reason: 'SMTP not configured or disabled' };
   const recipients = Array.isArray(to) ? to : [to];
   const net = require('net');
@@ -110,8 +140,8 @@ async function sendMail(to, subject, body) {
     const ignoreSSL= cfg.ignore_ssl === true || cfg.ignore_ssl === 'true';
     const from     = cfg.from || 'dashboard@localhost';
     const fromName = cfg.from_name || 'Nginx Dashboard';
-    const user     = cfg.username || '';
-    const pass     = cfg.password || '';
+    const user     = String(cfg.username || '');
+    const pass     = String(cfg.password || '');
 
     const tlsOpts = { host, servername: host, rejectUnauthorized: !ignoreSSL };
     let   sock;
@@ -122,7 +152,7 @@ async function sendMail(to, subject, body) {
     const lines = () => buf.split('\r\n').filter(Boolean);
     const lastCode = () => { const ls = lines(); return ls.length ? parseInt(ls[ls.length-1]) : 0; };
 
-    function send(cmd) { sock.write(cmd + '\r\n'); }
+    function sendLine(cmd) { sock.write(cmd + '\r\n'); }
 
     // Fix (audit finding MISC-06): four distinct SMTP-protocol bugs in this
     // module, all in how a message and its envelope were assembled:
@@ -135,9 +165,9 @@ async function sendMail(to, subject, body) {
     //     message right there, with everything after it either lost or
     //     resent as spurious SMTP commands to the still-open connection.
     //  2. Message lines used the connection's own CRLF-per-command
-    //     convention (`send(l)` appends "\r\n") but `body` itself is a
+    //     convention (`sendLine(l)` appends "\r\n") but `body` itself is a
     //     plain JS string that may contain bare "\n" (not "\r\n"): sent as
-    //     one `send()` call, `body` produced bare LFs inside the DATA
+    //     one `sendLine()` call, `body` produced bare LFs inside the DATA
     //     stream, which RFC 5321 forbids — tolerated by many servers, but
     //     not guaranteed, and not correct.
     //  3. Non-ASCII subjects ("Résumé quotidien") were inserted into the
@@ -173,7 +203,7 @@ async function sendMail(to, subject, body) {
       // Normalize every line ending to CRLF and dot-stuff each one
       // individually — `body` may itself contain "\r\n", "\n" or a lone
       // "\r", and each resulting line is sent as its own SMTP line below via
-      // `send()`, so none of the header lines (fixed, never user-controlled
+      // `sendLine()`, so none of the header lines (fixed, never user-controlled
       // free text) need stuffing, only the body's.
       const bodyLines = String(body ?? '').split(/\r\n|\r|\n/).map(dotStuff);
       const msgLines = [
@@ -197,11 +227,11 @@ async function sendMail(to, subject, body) {
       buf = '';
 
       if (step === 0 && code === 220) {
-        send(`EHLO ${host}`); step = 1; return;
+        sendLine(`EHLO ${host}`); step = 1; return;
       }
       if (step === 1 && (code === 250 || code === 220)) {
         if (security === 'tls' && !upgraded) {
-          send('STARTTLS'); step = 2; return;
+          sendLine('STARTTLS'); step = 2; return;
         }
         step = 3; doAuth(); return;
       }
@@ -210,7 +240,7 @@ async function sendMail(to, subject, body) {
         const plain = sock;
         sock = tls.connect({ socket: plain, ...tlsOpts }, () => {
           upgraded = true;
-          send(`EHLO ${host}`); step = 1;
+          sendLine(`EHLO ${host}`); step = 1;
         });
         sock.on('data', d => next(d.toString()));
         sock.on('error', e => resolve({ ok: false, reason: e.message }));
@@ -219,33 +249,33 @@ async function sendMail(to, subject, body) {
       if (step === 3) { // after EHLO post-TLS
         doAuth(); return;
       }
-      if (step === 4 && code === 334) { send(Buffer.from(user).toString('base64')); step = 5; return; }
-      if (step === 5 && code === 334) { send(Buffer.from(pass).toString('base64')); step = 6; return; }
+      if (step === 4 && code === 334) { sendLine(Buffer.from(user).toString('base64')); step = 5; return; }
+      if (step === 5 && code === 334) { sendLine(Buffer.from(pass).toString('base64')); step = 6; return; }
       if (step === 6 && code === 235) { sendEnvelope(); return; }
       if (step === 6 && code >= 500)  { resolve({ ok: false, reason: `Auth failed: ${code}` }); sock.destroy(); return; }
       // safeRecipients (fix MISC-06): CR/LF stripped, so a caller-supplied
       // address cannot break out of the RCPT TO command into a new one.
-      if (step === 10 && code === 250) { send(`RCPT TO:<${safeRecipients[0]}>`); step = 11; return; }
+      if (step === 10 && code === 250) { sendLine(`RCPT TO:<${safeRecipients[0]}>`); step = 11; return; }
       if (step === 11 && code === 250) {
         // More recipients?
         const remaining = safeRecipients.slice(1);
-        if (remaining.length) { remaining.forEach(r => send(`RCPT TO:<${r}>`)); }
-        send('DATA'); step = 12; return;
+        if (remaining.length) { remaining.forEach(r => sendLine(`RCPT TO:<${r}>`)); }
+        sendLine('DATA'); step = 12; return;
       }
       if (step === 12 && code === 354) {
-        buildMessage().forEach(l => send(l));
+        buildMessage().forEach(l => sendLine(l));
         step = 13; return;
       }
-      if (step === 13 && code === 250) { send('QUIT'); resolve({ ok: true }); sock.destroy(); return; }
+      if (step === 13 && code === 250) { sendLine('QUIT'); resolve({ ok: true }); sock.destroy(); return; }
       if (code >= 400) { resolve({ ok: false, reason: `SMTP error ${code}` }); sock.destroy(); }
     }
 
     function doAuth() {
-      if (user) { send('AUTH LOGIN'); step = 4; }
+      if (user) { sendLine('AUTH LOGIN'); step = 4; }
       else       { sendEnvelope(); }
     }
 
-    function sendEnvelope() { send(`MAIL FROM:<${stripCrlf(from)}>`); step = 10; }
+    function sendEnvelope() { sendLine(`MAIL FROM:<${stripCrlf(from)}>`); step = 10; }
 
     function connect() {
       if (security === 'ssl') {

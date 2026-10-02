@@ -210,6 +210,12 @@ function anRenderBaseline(b, cardId, boxId) {
     cov.style.fontSize = '11px';
     cov.textContent = t('analyzer.slotsUsable', { usable: b.bucketsUsable, total: b.totalSlots, coverage: b.coverage });
     wrap.appendChild(cov);
+    if (b.keysTracked != null) {
+      const ki = document.createElement('div');
+      ki.style.cssText = 'margin-top:4px;font-size:11px;color:var(--text3)';
+      ki.textContent = t('analyzer.keysInfo', { tracked: b.vhostsTracked, sporadic: b.sporadicKeys });
+      wrap.appendChild(ki);
+    }
     box.appendChild(wrap);
     return;
   }
@@ -219,6 +225,12 @@ function anRenderBaseline(b, cardId, boxId) {
   ok.style.color = 'var(--green)';
   ok.textContent = t('analyzer.active', { usable: b.bucketsUsable, total: b.totalSlots, coverage: b.coverage });
   box.appendChild(ok);
+  if (b.keysTracked != null) {
+    const ki = document.createElement('div');
+    ki.style.cssText = 'margin-top:4px;font-size:11px;color:var(--text3)';
+    ki.textContent = t('analyzer.keysInfo', { tracked: b.vhostsTracked, sporadic: b.sporadicKeys });
+    box.appendChild(ki);
+  }
 }
 
 async function anAction(action) {
@@ -497,6 +509,10 @@ function anAlertCard(a) {
     card.appendChild(exc);
   }
 
+  // Campagne distribuee (regle scope: global) : preuves agregees lisibles (analyzer-campaign.js).
+  const campaign = typeof anCampaignPanel === 'function' ? anCampaignPanel(a) : null;
+  if (campaign) card.appendChild(campaign);
+
   // Les preuves sont ce qui permet de decider : repliees, mais presentes.
   if (a.evidence && Object.keys(a.evidence).length) {
     const toggle = document.createElement('button');
@@ -506,7 +522,7 @@ function anAlertCard(a) {
     const pre = document.createElement('div');
     pre.className = 'an-evidence';
     pre.style.display = 'none';
-    pre.textContent = JSON.stringify(a.evidence, null, 2);
+    pre.textContent = JSON.stringify(campaign ? anCampaignRaw(a.evidence) : a.evidence, null, 2);
     toggle.addEventListener('click', function () {
       pre.style.display = pre.style.display === 'none' ? '' : 'none';
     });
@@ -717,18 +733,17 @@ async function rulesLoad() {
   const data = await api('/analyzer/rules');
   const unreachableEl = document.getElementById('rules-unreachable');
   const listEl = document.getElementById('rules-builtin-list');
-  const customListEl = document.getElementById('rules-custom-list');
   const errEl = document.getElementById('rules-custom-errors');
   if (!data || data.reachable === false) {
     unreachableEl.style.display = '';
     listEl.innerHTML = '';
-    customListEl.innerHTML = '';
     return;
   }
   unreachableEl.style.display = 'none';
   rulesRenderProcessing(document.getElementById('rules-processing'), data.processing);
   rulesRenderBuiltins(listEl, data.builtins || []);
-  rulesRenderCustom(customListEl, data.custom || []);
+  // Onglet « Mes regles » (formulaire) : public/assets/js/rules-builder.js
+  if (typeof rbSetData === 'function') rbSetData(data.custom || [], data.customErrors || []);
   const yamlBox = document.getElementById('rules-custom-yaml');
   // Ne pas ecraser une saisie en cours si l operateur a deja commence a
   // modifier le texte (ex : rafraichissement declenche par un toggle) —
@@ -848,40 +863,107 @@ function rulesRenderBuiltins(container, builtins) {
       }
       if (cfgWrap.childNodes.length) wrap.appendChild(cfgWrap);
     }
+    wrap.appendChild(rulesRenderBlocklistForm(r.key, r.blocklist));
     container.appendChild(wrap);
   }
 }
 
-function rulesRenderCustom(container, custom) {
-  container.innerHTML = '';
-  if (!custom.length) return;
-  for (const r of custom) {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 8px;background:var(--bg);border-radius:6px';
-    const idBadge = document.createElement('span');
-    idBadge.textContent = '#' + r.id;
-    idBadge.style.cssText = 'font-family:monospace;font-size:10px;color:var(--text3)';
-    const nameEl = document.createElement('span');
-    nameEl.style.fontWeight = '600';
-    nameEl.textContent = r.name;
-    const sev = document.createElement('span');
-    sev.textContent = (RULES_SEVERITY_LABEL[r.severity] && RULES_SEVERITY_LABEL[r.severity]()) || r.severity;
-    sev.style.cssText = `font-size:10px;color:${RULES_SEVERITY_COLOR[r.severity] || 'var(--text3)'}`;
-    const state = document.createElement('span');
-    state.style.cssText = 'margin-left:auto;font-size:10px;color:' + (r.enabled !== false ? 'var(--green)' : 'var(--text3)');
-    state.textContent = r.enabled !== false ? (t('analyzer.rules.enabled') || 'Activee') : (t('analyzer.rules.disabled') || 'Desactivee');
-    row.appendChild(idBadge);
-    row.appendChild(nameEl);
-    row.appendChild(sev);
-    if (r.description) {
-      const desc = document.createElement('span');
-      desc.style.color = 'var(--text3)';
-      desc.textContent = r.description;
-      row.appendChild(desc);
-    }
-    row.appendChild(state);
-    container.appendChild(row);
+/**
+ * "Blocklist a la CrowdSec" par regle (v12.50.0, retour utilisateur : "je
+ * vois ça au niveau des regles existantes ... threshold + remediation au
+ * niveau de la regle"). Un petit formulaire inline par regle integree plutot
+ * qu une modale separee — seulement 4 champs, et l operateur les regarde
+ * juste apres avoir lu ce que la regle detecte, juste au-dessus.
+ */
+function rulesRenderBlocklistForm(key, bl) {
+  bl = bl || { threshold: null, windowMinutes: 1440, remediation: false, remediationMinutes: null, remediationType: 'block' };
+  const box = document.createElement('div');
+  box.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px dashed var(--border2);display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:11px;color:var(--text2)';
+
+  const label = document.createElement('span');
+  label.style.fontWeight = '600';
+  label.textContent = t('analyzer.rules.blocklist.title') || 'Blocklist IP';
+  box.appendChild(label);
+
+  const mkNum = (id, value, placeholder) => {
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.min = '1'; inp.id = id;
+    inp.value = value != null ? value : '';
+    inp.placeholder = placeholder;
+    inp.style.cssText = 'width:70px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:3px 6px';
+    return inp;
+  };
+
+  const thresholdWrap = document.createElement('label');
+  thresholdWrap.style.cssText = 'display:flex;align-items:center;gap:4px';
+  thresholdWrap.appendChild(document.createTextNode((t('analyzer.rules.blocklist.threshold') || 'Seuil') + ' :'));
+  const thresholdInp = mkNum(`bl-threshold-${key}`, bl.threshold, t('analyzer.rules.blocklist.off') || 'desactive');
+  thresholdWrap.appendChild(thresholdInp);
+  box.appendChild(thresholdWrap);
+
+  const windowWrap = document.createElement('label');
+  windowWrap.style.cssText = 'display:flex;align-items:center;gap:4px';
+  windowWrap.appendChild(document.createTextNode((t('analyzer.rules.blocklist.window') || 'Fenetre (min)') + ' :'));
+  const windowInp = mkNum(`bl-window-${key}`, bl.windowMinutes, '1440');
+  windowWrap.appendChild(windowInp);
+  box.appendChild(windowWrap);
+
+  const remWrap = document.createElement('label');
+  remWrap.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer';
+  const remCb = document.createElement('input');
+  remCb.type = 'checkbox'; remCb.id = `bl-remediation-${key}`;
+  remCb.checked = bl.remediation === true;
+  remWrap.appendChild(remCb);
+  remWrap.appendChild(document.createTextNode(t('analyzer.rules.blocklist.remediation') || 'Bloquer reellement'));
+  box.appendChild(remWrap);
+
+  const remMinWrap = document.createElement('label');
+  remMinWrap.style.cssText = 'display:flex;align-items:center;gap:4px';
+  remMinWrap.appendChild(document.createTextNode((t('analyzer.rules.blocklist.remediationMinutes') || 'Duree (min)') + ' :'));
+  const remMinInp = mkNum(`bl-remmin-${key}`, bl.remediationMinutes, t('analyzer.rules.blocklist.permanent') || 'illimitee');
+  remMinWrap.appendChild(remMinInp);
+  box.appendChild(remMinWrap);
+
+  const typeWrap = document.createElement('label');
+  typeWrap.style.cssText = 'display:flex;align-items:center;gap:4px';
+  typeWrap.appendChild(document.createTextNode((t('analyzer.rules.blocklist.type') || 'Type') + ' :'));
+  const typeSel = document.createElement('select');
+  typeSel.id = `bl-type-${key}`;
+  typeSel.style.cssText = 'font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:3px 6px';
+  [['block', t('analyzer.rules.blocklist.typeBlock') || 'Refus (403/444)'], ['challenge', t('analyzer.rules.blocklist.typeChallenge') || 'Challenge navigateur']].forEach(([v, l]) => {
+    const o = document.createElement('option'); o.value = v; o.textContent = l; if ((bl.remediationType || 'block') === v) o.selected = true; typeSel.appendChild(o);
+  });
+  typeWrap.appendChild(typeSel);
+  box.appendChild(typeWrap);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn sm';
+  saveBtn.textContent = t('common.save') || 'Enregistrer';
+  saveBtn.addEventListener('click', () => rulesSaveBlocklist(key, thresholdInp, windowInp, remCb, remMinInp, errEl, typeSel));
+  box.appendChild(saveBtn);
+
+  const errEl = document.createElement('span');
+  errEl.style.cssText = 'color:var(--red);width:100%';
+  box.appendChild(errEl);
+
+  return box;
+}
+
+async function rulesSaveBlocklist(key, thresholdInp, windowInp, remCb, remMinInp, errEl, typeSel) {
+  errEl.textContent = '';
+  const body = {
+    threshold: thresholdInp.value === '' ? null : +thresholdInp.value,
+    windowMinutes: windowInp.value === '' ? null : +windowInp.value,
+    remediation: remCb.checked,
+    remediationMinutes: remMinInp.value === '' ? null : +remMinInp.value,
+    remediationType: typeSel && typeSel.value === 'challenge' ? 'challenge' : 'block',
+  };
+  const r = await api(`/analyzer/rules/blocklist?key=${encodeURIComponent(key)}`, { method: 'POST', body: JSON.stringify(body) });
+  if (!r || !r.ok) {
+    errEl.textContent = (r && r.errors && r.errors.join(', ')) || (t('analyzer.rules.saveError') || 'Erreur : agent injoignable');
+    return;
   }
+  await rulesLoad();
 }
 
 async function rulesToggle(key, enable) {
@@ -918,6 +1000,10 @@ function rulesResetTemplate() {
     '    ua_hint: null',
     '    status_in: []',
     '    method_in: []',
+    '    blocklist_threshold: null',
+    '    blocklist_window_minutes: 1440',
+    '    blocklist_remediation: false',
+    '    blocklist_remediation_minutes: null',
     '',
   ].join('\n');
   yamlBox.dataset.touched = '1';
@@ -1028,7 +1114,8 @@ function directivesRenderRow(vhost, block, ruleNames) {
 
   const c5 = document.createElement('td');
   const ignored = block.analyzeIgnoreRuleIds || [];
-  if (!ignored.length) {
+  const pathsIgn = Object.entries(block.analyzePathsIgnore || {});
+  if (!ignored.length && !pathsIgn.length) {
     c5.textContent = '—';
     c5.style.color = 'var(--text3)';
   } else {
@@ -1039,8 +1126,28 @@ function directivesRenderRow(vhost, block, ruleNames) {
       chip.textContent = '#' + id + (ruleNames[id] ? ' ' + ruleNames[id] : '');
       c5.appendChild(chip);
     }
+    // v12.54.0 : # nginx-control-analyze-rule-{ID}-paths-ignore — la regle
+    // reste active, seuls ces chemins sont retires de son comptage.
+    for (const [id, paths] of pathsIgn) {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'font-size:10px;color:var(--text2);background:var(--bg);border:1px dashed var(--border2);border-radius:10px;padding:2px 8px;white-space:nowrap';
+      chip.textContent = '#' + id + (ruleNames[id] ? ' ' + ruleNames[id] : '') + ' · ' + paths.length + ' ' + (t('analyzer.directives.pathsIgnored') || 'chemin(s) ignoré(s)');
+      chip.title = paths.join('\n');
+      c5.appendChild(chip);
+    }
   }
   tr.appendChild(c5);
+
+  // Retour utilisateur (v12.50.0) : opt-out de remediation par vhost (garde
+  // les alertes, bloque juste jamais automatiquement cette adresse via cette
+  // regle) — distinct de la colonne "Analyse" ci-dessus (c4), qui coupe
+  // l ALERTE elle-meme.
+  const c5b = document.createElement('td');
+  c5b.appendChild(directivesBadge(
+    !block.analyzeNoRemediation,
+    'analyzer.directives.on', 'Actif', 'analyzer.directives.remediationOff', 'Remediation coupee'
+  ));
+  tr.appendChild(c5b);
 
   const c6 = document.createElement('td');
   const mon = block.monitoring || {};

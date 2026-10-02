@@ -60,7 +60,7 @@ const { PERMS, ROLE_PERMS, roleHasPerm, hasPerm, hashPassword, verifyPassword,
         validateSession, destroySession, sessions, checkLoginRate,
         recordLoginFailure, clearLoginFailures, parseCookies, setCookieHeader,
         clearCookieHeader, getTokenFromReq, getSessionFromReq, requireSession,
-        requireApiAuth, authenticateQueryToken, authenticateDeployToken, authenticateAgentToken,
+        requireApiAuth, authenticateQueryToken, authenticateDeployToken, authenticateAgentToken, authenticateCertsyncToken,
         loginOriginAllowed } = auth;
 
 const { send, parseBody, readRawBody, clientIp, Router } = httpLib;
@@ -89,6 +89,7 @@ const { ensureContainerAtBoot: ensureCertbotDnsContainerAtBoot, getCertbotDnsCfg
 const { getGoDNSCfg, getGoDNSConfigFilePath } = require('./features/godns');
 const { ensureContainerAtBoot: ensureGeoipupdateContainerAtBoot } = require('./features/geoipupdate');
 const { ensureContainerAtBoot: ensureErrorPagesContainerAtBoot } = require('./features/error-pages');
+const { ensureContainerAtBoot: ensureChallengeContainerAtBoot } = require('./features/challenge-container');
 const goaccessFeature   = require('./features/goaccess');
 const deployFeature     = require('./features/deploy');
 const { deployFromGit, deployFromGitWork, cleanLegacyTestDirs } = deployFeature;
@@ -263,6 +264,16 @@ const AGENT_TOKEN_ROUTES = new Set([
   'POST /api/agent/manifest',
 ]);
 
+// Les trois routes qu'un jeton de synchronisation de certificats
+// (lib/certsync-store.js, v12.59.0) peut atteindre — liste fixe, même
+// confinement que ci-dessus : la portée (pull/push) et les noms autorisés sont
+// ensuite contrôlés par features/certsync.js.
+const CERTSYNC_TOKEN_ROUTES = new Set([
+  'GET /api/certsync/list',
+  'GET /api/certsync/pull',
+  'POST /api/certsync/push',
+]);
+
 // ─── Route registry ──────────────────────────────────────────────────────────
 // Features register their own routes here. Anything not matched falls through
 // to the legacy if-chain below, which shrinks with each extracted feature.
@@ -272,6 +283,7 @@ const FEATURES = [
   require('./features/users'),
   require('./features/geoip'),
   require('./features/ssl'),
+  require('./features/certsync'),
   require('./features/crowdsec'),
   require('./features/metrics'),
   require('./features/logs'),
@@ -283,12 +295,15 @@ const FEATURES = [
   require('./features/godns'),
   require('./features/geoipupdate'),
   require('./features/error-pages'),
+  require('./features/challenge-container'),
   require('./features/goaccess'),
   require('./features/sync-ref'),
   require('./features/deploy'),
   require('./features/nginx-control'),
   require('./features/analyzer'),
+  require('./features/analyzer-rules'),
   require('./features/digest'),
+  require('./features/scheduler'),
   require('./features/config-editor'),
   require('./features/backends'),
   require('./features/audit'),
@@ -301,6 +316,7 @@ const FEATURES = [
   require('./features/menu-config'),
   require('./features/changelog'),
   require('./features/alerting'),
+  require('./features/containers'),
 ];
 for (const f of FEATURES) f.register(router);
 
@@ -363,6 +379,9 @@ const scheduler = require('./lib/scheduler');
 scheduler.setTasks({
   createBackupZip:            require('./lib/backup').createBackupZip,
   gitBackupPush:              require('./lib/git').gitBackupPush,
+  restartAnalyzer:            analyzerFeature.restartAnalyzer,
+  runCertsync:                require('./features/certsync').runSync,
+  listCertsyncRemotes:        require('./features/certsync').listRemotesForScheduler,
   listGoAccessSources:        goaccessFeature.listGoAccessSources,
   getGoAccessContainerStatus: goaccessFeature.getGoAccessContainerStatus,
   restartGoAccessContainer:   goaccessFeature.restartGoAccessContainer,
@@ -393,6 +412,10 @@ require('./lib/digest').configure({
 blocklistsFeature.setDeps({
   analyzerApi: analyzerFeature.analyzerApi,
   analyzerApiJson: analyzerFeature.analyzerApiJson,
+  // v12.50.0 : meme source de verite que pushVhostRules() pour savoir quels
+  // vhosts ont opte pour "# nginx-control-analyze-no-remediation: on" — voir
+  // computeAnalyzerBlocklist() dans features/blocklists.js.
+  buildVhostRulesMap: analyzerFeature.buildVhostRulesMap,
 });
 
 require('./features/sync-ref').setDeployHandlers({
@@ -407,6 +430,12 @@ require('./features/sync-ref').setDeployHandlers({
 require('./features/configs').setDeps({
   testConfigEphemeral: deployFeature.testConfigEphemeral,
   fetchRefFileList:    require('./features/sync-ref').fetchRefFileList,
+});
+
+// nginx-control.js: the "test in an ephemeral container" action runs the same
+// sandbox as the Git test and the config editor (features/deploy.js).
+require('./features/nginx-control').setDeps({
+  testConfigEphemeral: deployFeature.testConfigEphemeral,
 });
 
 // monitor.js reuses the exact same probe as the on-demand backend check
@@ -469,7 +498,7 @@ agentsFeature.setDeps({
 // the belt-and-suspenders fallback that covers a momentarily-stale list.
 deployFeature.setDeps({
   generatedFiles: () => [
-    ...blocklistsFeature.GENERATED_FILES,
+    ...blocklistsFeature.getGeneratedFiles(),
     ...dockerAutoconfigFeature.getGeneratedFiles(),
     ...agentsFeature.getGeneratedFiles(),
   ],
@@ -676,6 +705,11 @@ async function handleRequest(req, res) {
   // token just above, see AGENT_TOKEN_ROUTES's own comment.
   if (!session && AGENT_TOKEN_ROUTES.has(`${req.method} ${pathname}`)) {
     session = authenticateAgentToken(req);
+  }
+  // Jeton de synchronisation de certificats : uniquement ses trois routes.
+  if (!session && CERTSYNC_TOKEN_ROUTES.has(`${req.method} ${pathname}`)) {
+    session = authenticateCertsyncToken(req);
+    if (session) session.ip = reqClientIp;
   }
   if (!session) return send(res, 401, { error: 'Unauthorized. Login at /auth/login or pass Authorization: Bearer <token>.' });
 
@@ -939,7 +973,7 @@ async function fetchVersionFile(fileUrl, depth = 5) {
     try {
       const proto = fileUrl.startsWith('https') ? require('https') : http;
       const req = proto.request(
-        Object.assign(new URL(fileUrl), { method: 'GET', headers: { 'User-Agent': 'nginx-dashboard' }, timeout: 8000 }),
+        Object.assign(new URL(fileUrl), { method: 'GET', headers: { 'User-Agent': cfg.HTTP_USER_AGENT }, timeout: 8000 }),
         (res) => {
           if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
             resolve(fetchVersionFile(res.headers.location, depth - 1));
@@ -1196,6 +1230,7 @@ ensureRenewalContainerAtBoot().catch(() => {});
 ensureCertbotDnsContainerAtBoot().catch(() => {});
 ensureGeoipupdateContainerAtBoot().catch(() => {});
 ensureErrorPagesContainerAtBoot().catch(() => {});
+ensureChallengeContainerAtBoot().catch(() => {});
 analyzerFeature.ensureContainerAtBoot().catch(() => {});
 server.listen(PORT, () => {
   const imageVersion = process.env.APP_VERSION || VERSION;

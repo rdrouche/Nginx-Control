@@ -58,7 +58,7 @@ function crowdsecGet(endpoint) {
       hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname + url.search, method: 'GET',
       headers: { 'X-Api-Key': c.apiKey, 'Content-Type': 'application/json',
-                 'User-Agent': `nginx-dashboard/${cfg.VERSION}` },
+                 'User-Agent': cfg.HTTP_USER_AGENT },
       timeout: 8000,
     };
     const req = proto.request(opts, (res) => {

@@ -37,6 +37,7 @@ const { PERMS, hasPerm } = auth;
 const { send, parseBody } = httpLib;
 const { maskSecretsInConfig, unmaskSecrets } = secrets;
 const { logEvent } = events;
+const { challengeOverridesFromText } = require('../lib/challenge-settings');
 
 const FILES = [
   { key: 'certbot',      label: 'Certbot — défi HTTP',   file: cfg.CERTBOT_CONFIG_FILE },
@@ -48,6 +49,7 @@ const FILES = [
   { key: 'git',          label: 'Git (dépôt config)',     file: cfg.GIT_CONFIG_FILE },
   { key: 'crowdsec',     label: 'CrowdSec',               file: cfg.CROWDSEC_CONFIG_FILE },
   { key: 'goaccess',     label: 'GoAccess',               file: cfg.GOACCESS_CONFIG_FILE },
+  { key: 'challenge',    label: 'Challenge HTTP',         file: cfg.CHALLENGE_CONFIG_FILE },
   { key: 'blocklists',   label: 'Blocklists IP',          file: cfg.BLOCKLIST_CONFIG_FILE },
   { key: 'deploy-tokens', label: 'Jetons de déploiement (CI/CD)', file: cfg.DEPLOY_TOKENS_FILE },
   { key: 'docker-autoconfig', label: 'Auto-config Docker (labels)', file: cfg.DOCKER_AUTOCONFIG_CONFIG_FILE },
@@ -107,9 +109,14 @@ function register(router) {
     // placeholder back unchanged — same rule as the smtp/notifications and
     // godns raw editors, so a save from a non-revealing session can never
     // clobber a license_key/token/credentials value with "********".
-    fs.writeFileSync(entry.file, unmaskSecrets(body.content, previous), 'utf8');
+    const finalContent = unmaskSecrets(body.content, previous);
+    fs.writeFileSync(entry.file, finalContent, 'utf8');
     logEvent('config_editor_save', `${entry.label} (${entry.key}) config saved`, session.username);
-    return send(res, 200, { ok: true });
+    // challenge.yml : les cles challenge_* ne sont appliquees a nginx qu apres
+    // regeneration des fichiers (page Challenge HTTP) — on previent l utilisateur.
+    const regenerate = entry.key === 'challenge'
+      && JSON.stringify(challengeOverridesFromText(previous)) !== JSON.stringify(challengeOverridesFromText(finalContent));
+    return send(res, 200, { ok: true, ...(regenerate ? { regenerateChallenge: true } : {}) });
   });
 }
 
