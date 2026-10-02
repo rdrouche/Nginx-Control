@@ -20,6 +20,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
 
     steps:
+      - name: Check branch (Fail if main)
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "::error::Le build est interdit depuis la branche main !"
+            exit 1
+          fi
+          
       - name: Install Node.js 
         run: apk add --no-cache nodejs npm
 
